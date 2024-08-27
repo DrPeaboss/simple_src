@@ -1,0 +1,12 @@
+[package]
+name = "simple_src"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+criterion = "0.5.1"
+hound = "3.5.1"
+
+[[bench]]
+name = "src_bench"
+harness = false

@@ -33,7 +33,7 @@ trait NextSample {
 }
 
 pub trait Convert {
-    fn proc_iter<'a, I>(&'a mut self, iter: I) -> ConvertIter<'a, I, Self>
+    fn proc_iter<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self>
     where
         I: Iterator<Item = f64>,
         Self: Sized;
@@ -43,14 +43,14 @@ pub trait Convert {
 
 impl<T: NextSample> Convert for T {
     #[inline]
-    fn proc_iter<'a, I>(&'a mut self, iter: I) -> ConvertIter<'a, I, Self> {
+    fn proc_iter<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self> {
         ConvertIter::new(iter, self)
     }
 
     #[inline]
     fn proc_slice(&mut self, input: &[f64]) -> Vec<f64> {
         let mut v = Vec::new();
-        let mut iter = input.iter().map(|&x| x);
+        let mut iter = input.iter().copied();
         let mut f = || iter.next();
         while let Some(s) = self.next_sample(&mut f) {
             v.push(s);

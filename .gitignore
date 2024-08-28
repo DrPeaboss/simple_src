@@ -1,2 +1,4 @@
 /target
 /output
+/perf*
+/flamegraph.svg

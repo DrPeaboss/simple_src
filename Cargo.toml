@@ -10,3 +10,7 @@ hound = "3.5.1"
 [[bench]]
 name = "src_bench"
 harness = false
+
+[profile.perf]
+inherits = "release"
+debug = true

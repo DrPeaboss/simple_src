@@ -11,7 +11,7 @@ fn t4448() {
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
     let iter = (0..).map(|x| x as f64).into_iter();
-    for s in manager.converter().proc_iter(iter).take(48000) {
+    for s in manager.converter().process(iter).take(48000) {
         black_box(s);
     }
     println!("{:?}", now.elapsed());
@@ -26,7 +26,7 @@ fn t4844() {
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
     let iter = (0..).map(|x| x as f64).into_iter();
-    for s in manager.converter().proc_iter(iter).take(44100) {
+    for s in manager.converter().process(iter).take(44100) {
         black_box(s);
     }
     println!("{:?}", now.elapsed());
@@ -41,7 +41,7 @@ fn t9644() {
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
     let iter = (0..).map(|x| x as f64).into_iter();
-    for s in manager.converter().proc_iter(iter).take(44100) {
+    for s in manager.converter().process(iter).take(44100) {
         black_box(s);
     }
     println!("{:?}", now.elapsed());
@@ -56,7 +56,7 @@ fn t9648() {
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
     let iter = (0..).map(|x| x as f64).into_iter();
-    for s in manager.converter().proc_iter(iter).take(48000) {
+    for s in manager.converter().process(iter).take(48000) {
         black_box(s);
     }
     println!("{:?}", now.elapsed());

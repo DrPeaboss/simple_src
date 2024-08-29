@@ -33,29 +33,18 @@ trait NextSample {
 }
 
 pub trait Convert {
-    fn proc_iter<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self>
+    fn process<I>(&mut self, iter: I) -> impl Iterator<Item = f64>
     where
-        I: Iterator<Item = f64>,
-        Self: Sized;
-
-    fn proc_slice(&mut self, input: &[f64]) -> Vec<f64>;
+        I: Iterator<Item = f64>;
 }
 
 impl<T: NextSample> Convert for T {
     #[inline]
-    fn proc_iter<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self> {
+    fn process<I>(&mut self, iter: I) -> impl Iterator<Item = f64>
+    where
+        I: Iterator<Item = f64>,
+    {
         ConvertIter::new(iter, self)
-    }
-
-    #[inline]
-    fn proc_slice(&mut self, input: &[f64]) -> Vec<f64> {
-        let mut v = Vec::new();
-        let mut iter = input.iter().copied();
-        let mut f = || iter.next();
-        while let Some(s) = self.next_sample(&mut f) {
-            v.push(s);
-        }
-        v
     }
 }
 
@@ -69,7 +58,7 @@ mod tests {
         let samples = vec![1.0, 2.0, 3.0, 4.0];
         let manager = linear::Manager::new(2.0);
         let mut cvtr = manager.converter();
-        for s in cvtr.proc_slice(&samples) {
+        for s in cvtr.process(samples.into_iter()) {
             println!("sample = {s}");
         }
     }
@@ -81,7 +70,7 @@ mod tests {
         let manager = sinc::Manager::with_raw(2.0, 16, 4, 5.0, 1.0);
         for s in manager
             .converter()
-            .proc_iter(samples.into_iter())
+            .process(samples.into_iter())
             .skip(manager.latency())
         {
             println!("sample = {s}");
@@ -95,7 +84,7 @@ mod tests {
         let manager = sinc::Manager::with_order(2.0, 30.0, 16, 4);
         for s in manager
             .converter()
-            .proc_iter(samples.into_iter())
+            .process(samples.into_iter())
             .skip(manager.latency())
         {
             println!("sample = {s}");

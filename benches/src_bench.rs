@@ -33,7 +33,7 @@ fn src_bench_process_1s(c: &mut Criterion) {
     c.bench_function("src 44k to 48k a150 1s", |b| {
         b.iter(|| {
             let iter = (0..).map(|x| x as f64).into_iter();
-            for s in manager.converter().proc_iter(iter).take(48000) {
+            for s in manager.converter().process(iter).take(48000) {
                 black_box(s);
             }
         })
@@ -42,7 +42,7 @@ fn src_bench_process_1s(c: &mut Criterion) {
     c.bench_function("src 48k to 44k a150 1s", |b| {
         b.iter(|| {
             let iter = (0..).map(|x| x as f64).into_iter();
-            for s in manager.converter().proc_iter(iter).take(44100) {
+            for s in manager.converter().process(iter).take(44100) {
                 black_box(s);
             }
         })
@@ -51,7 +51,7 @@ fn src_bench_process_1s(c: &mut Criterion) {
     c.bench_function("src 96k to 44k a150 1s", |b| {
         b.iter(|| {
             let iter = (0..).map(|x| x as f64).into_iter();
-            for s in manager.converter().proc_iter(iter).take(44100) {
+            for s in manager.converter().process(iter).take(44100) {
                 black_box(s);
             }
         })
@@ -60,7 +60,7 @@ fn src_bench_process_1s(c: &mut Criterion) {
     c.bench_function("src 96k to 48k a150 1s", |b| {
         b.iter(|| {
             let iter = (0..).map(|x| x as f64).into_iter();
-            for s in manager.converter().proc_iter(iter).take(48000) {
+            for s in manager.converter().process(iter).take(48000) {
                 black_box(s);
             }
         })

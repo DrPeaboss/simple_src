@@ -54,7 +54,7 @@ fn convert(file_prefix: &str, src: &Src, remark: &str) {
         .map(|s| s.unwrap() as f64)
         .chain(std::iter::repeat(0.0));
     let mut cvtr = src.manager.converter();
-    cvtr.proc_iter(in_iter)
+    cvtr.process(in_iter)
         .skip(src.manager.latency())
         .take(out_duration)
         .for_each(|s| writer.write_sample(s as f32).unwrap());
@@ -79,7 +79,7 @@ fn impulse(src: &Src, remark: &str) {
         .enumerate()
         .map(|(i, _)| if i == count / 2 { 1.0 } else { 0.0 });
     let mut cvrt = src.manager.converter();
-    cvrt.proc_iter(in_iter)
+    cvrt.process(in_iter)
         .skip(src.manager.latency())
         .take(src.sr_new as usize)
         .for_each(|s| writer.write_sample(s as f32).unwrap());
@@ -98,7 +98,7 @@ fn impulse_raw(src: &Src, remark: &str) {
         .enumerate()
         .map(|(i, _)| if i == count / 2 { 1.0 } else { 0.0 });
     let mut cvrt = src.manager.converter();
-    cvrt.proc_iter(in_iter)
+    cvrt.process(in_iter)
         .skip(src.manager.latency())
         .take(src.sr_new as usize)
         .for_each(|s| {

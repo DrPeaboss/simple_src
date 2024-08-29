@@ -23,7 +23,7 @@ fn convert(file_prefix: &str, sr_old: u32, sr_new: u32) {
         .chain(std::iter::repeat(0.0));
     Manager::new(ratio)
         .converter()
-        .proc_iter(in_iter)
+        .process(in_iter)
         .take(out_duration)
         .for_each(|s| writer.write_sample(s as f32).unwrap());
     writer.finalize().unwrap();

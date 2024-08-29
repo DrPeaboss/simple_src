@@ -5,10 +5,10 @@ fn main() {
     let samples2 = [5.0, 6.0, 7.0, 8.0];
     let manager = linear::Manager::new(2.0);
     let mut cvtr = manager.converter();
-    for s in cvtr.proc_slice(&samples1) {
+    for s in cvtr.process(samples1.into_iter()) {
         println!("{s}");
     }
-    for s in cvtr.proc_slice(&samples2) {
+    for s in cvtr.process(samples2.into_iter()) {
         println!("{s}");
     }
 }

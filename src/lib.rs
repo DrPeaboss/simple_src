@@ -33,17 +33,15 @@ trait NextSample {
 }
 
 pub trait Convert {
-    fn process<I>(&mut self, iter: I) -> impl Iterator<Item = f64>
+    fn process<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self>
     where
-        I: Iterator<Item = f64>;
+        I: Iterator<Item = f64>,
+        Self: Sized;
 }
 
 impl<T: NextSample> Convert for T {
     #[inline]
-    fn process<I>(&mut self, iter: I) -> impl Iterator<Item = f64>
-    where
-        I: Iterator<Item = f64>,
-    {
+    fn process<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self> {
         ConvertIter::new(iter, self)
     }
 }
@@ -51,6 +49,21 @@ impl<T: NextSample> Convert for T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(dead_code)]
+    struct DynTest;
+
+    impl DynTest {
+        #[allow(dead_code)]
+        pub fn new(a: i32) -> Box<dyn Convert> {
+            if a == 0 {
+                Box::new(linear::Converter::new(0.5))
+            } else {
+                let filter = std::sync::Arc::new(vec![]);
+                Box::new(sinc::Converter::new(0.5, 128, 128, filter))
+            }
+        }
+    }
 
     #[test]
     #[ignore = "display only"]

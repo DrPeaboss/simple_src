@@ -101,7 +101,7 @@ impl Converter {
             if pos_n < pos_max {
                 let h1 = self.filter[pos_n];
                 let h2 = self.filter[pos_n + 1];
-                let h = h1 + (h2 - h1) * pos.fract();
+                let h = h1 + (h2 - h1) * (pos - pos_n as f64);
                 interp += s * h;
             }
         }

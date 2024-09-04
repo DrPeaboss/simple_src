@@ -28,12 +28,29 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn kaiser(x: f64, order: u32, beta: f64) -> f64 {
     let half = order as f64 * 0.5;
     if (x < -half) || (x > half) {
         return 0.0;
     }
     bessel_i0(beta * (1.0 - (x / half).powi(2)).sqrt()) / bessel_i0(beta)
+}
+
+#[inline]
+fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f64) -> Vec<f64> {
+    let len = order * quan / 2;
+    let i0_beta = bessel_i0(beta);
+    let half_order = order as f64 * 0.5;
+    let mut filter = Vec::with_capacity(len as usize + 1);
+    for i in 0..len {
+        let pos = i as f64 / quan as f64;
+        let i0_1 = bessel_i0(beta * (1.0 - (pos / half_order).powi(2)).sqrt());
+        let coef = sinc_c(pos, cutoff) * (i0_1 / i0_beta);
+        filter.push(coef);
+    }
+    filter.push(0.0);
+    filter
 }
 
 #[inline]
@@ -156,15 +173,8 @@ pub struct Manager {
 
 impl Manager {
     pub fn with_raw(ratio: f64, quan: u32, order: u32, kaiser_beta: f64, cutoff: f64) -> Self {
-        let half = order as f64 * 0.5;
-        let h_len = (quan as f64 * half).ceil() as usize;
-        let mut filter = Vec::with_capacity(h_len);
-        for i in 0..h_len {
-            let pos = i as f64 / quan as f64;
-            let coef = sinc_c(pos, cutoff) * kaiser(pos, order, kaiser_beta);
-            filter.push(coef);
-        }
-        let latency = (ratio * half).round() as usize;
+        let filter = generate_filter_table(quan, order, kaiser_beta, cutoff);
+        let latency = (ratio * order as f64 * 0.5).round() as usize;
         Self {
             ratio,
             order,

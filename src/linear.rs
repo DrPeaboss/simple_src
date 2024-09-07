@@ -70,6 +70,7 @@ impl NextSample for Converter {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Manager {
     ratio: f64,
 }

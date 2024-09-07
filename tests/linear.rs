@@ -41,3 +41,25 @@ fn tlinear() {
     convert("sweep", 48000, 96000);
     convert("sweep", 96000, 48000);
 }
+
+#[test]
+#[ignore = "display only"]
+fn tmultithread() {
+    let manager = Manager::new(2.0);
+    let h1 = std::thread::spawn(move || {
+        let mut converter = manager.converter();
+        let samples = (0..10).map(|x| x as f64);
+        for s in converter.process(samples) {
+            println!("{s}");
+        }
+    });
+    let h2 = std::thread::spawn(move || {
+        let mut converter = manager.converter();
+        let samples = (-10..0).map(|x| x as f64);
+        for s in converter.process(samples) {
+            println!("{s}");
+        }
+    });
+    h1.join().unwrap();
+    h2.join().unwrap();
+}

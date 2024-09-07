@@ -309,3 +309,26 @@ fn ta150_1_192k_down_order() {
     let src = Src::new_by_trans_width(192000, 48000, 150.0, 2048, trans_width);
     println!("order of 192k to 48k a150 is {}", src.manager.order());
 }
+
+#[test]
+#[ignore = "display only"]
+fn tmultithread() {
+    let manager = sinc::Manager::new(2.0, 30.0, 16, 0.1);
+    let manager2 = manager.clone();
+    let h1 = std::thread::spawn(move || {
+        let mut converter = manager.converter();
+        let samples = (0..10).map(|x| x as f64);
+        for s in converter.process(samples) {
+            println!("{s}");
+        }
+    });
+    let h2 = std::thread::spawn(move || {
+        let mut converter = manager2.converter();
+        let samples = (-10..0).map(|x| x as f64);
+        for s in converter.process(samples) {
+            println!("{s}");
+        }
+    });
+    h1.join().unwrap();
+    h2.join().unwrap();
+}

@@ -163,6 +163,7 @@ impl NextSample for Converter {
     }
 }
 
+#[derive(Clone)]
 pub struct Manager {
     ratio: f64,
     order: u32,

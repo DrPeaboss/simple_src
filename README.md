@@ -1,6 +1,6 @@
 # simple_src
 
-A simple sample rate conversion lib.
+A simple sample rate conversion lib for audio.
 
 Usage:
 

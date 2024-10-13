@@ -199,16 +199,16 @@ fn ta120_2() {
 
 #[test]
 #[ignore = "slow"]
-// cargo test -r --test sinc -- --ignored --exact --show-output ta140_1
-fn ta140_1() {
+// cargo test -r --test sinc -- --ignored --exact --show-output ta144_1
+fn ta144_1() {
     cwd();
-    let remark = "a140_1";
+    let remark = "a144_1";
     let trans_width = 2050.0 / 22050.0;
-    let src = Src::new_by_trans_width(44100, 48000, 140.0, 2048, trans_width);
+    let src = Src::new_by_trans_width(44100, 48000, 144.0, 2048, trans_width);
     println!("order of 44k to 48k {remark} is {}", src.manager.order());
     convert("sweep", &src, remark);
     impulse(&src, remark);
-    let src = Src::new_by_trans_width(48000, 44100, 140.0, 2048, trans_width);
+    let src = Src::new_by_trans_width(48000, 44100, 144.0, 2048, trans_width);
     println!("order of 48k to 44k {remark} is {}", src.manager.order());
     convert("sweep", &src, remark);
     impulse(&src, remark);
@@ -216,17 +216,36 @@ fn ta140_1() {
 
 #[test]
 #[ignore = "slow"]
-// cargo test -r --test sinc -- --ignored --exact --show-output ta160_1
-fn ta160_1() {
+// cargo test -r --test sinc -- --ignored --exact --show-output ta156_1
+fn ta156_1() {
     cwd();
-    let remark = "a160_1";
+    let remark = "a156_1";
     let trans_width = 2050.0 / 22050.0;
-    let src = Src::new_by_trans_width(44100, 48000, 160.0, 8192, trans_width);
+    let src = Src::new_by_trans_width(44100, 48000, 156.0, 4096, trans_width);
     println!("order of 44k to 48k {remark} is {}", src.manager.order());
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
-    let src = Src::new_by_trans_width(48000, 44100, 160.0, 8192, trans_width);
+    let src = Src::new_by_trans_width(48000, 44100, 156.0, 4096, trans_width);
+    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    convert("sweep", &src, remark);
+    impulse(&src, remark);
+    impulse_raw(&src, remark);
+}
+
+#[test]
+#[ignore = "slow"]
+// cargo test -r --test sinc -- --ignored --exact --show-output ta168_1
+fn ta168_1() {
+    cwd();
+    let remark = "a168_1";
+    let trans_width = 2050.0 / 22050.0;
+    let src = Src::new_by_trans_width(44100, 48000, 168.0, 8192, trans_width);
+    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    convert("sweep", &src, remark);
+    impulse(&src, remark);
+    impulse_raw(&src, remark);
+    let src = Src::new_by_trans_width(48000, 44100, 168.0, 8192, trans_width);
     println!("order of 48k to 44k {remark} is {}", src.manager.order());
     convert("sweep", &src, remark);
     impulse(&src, remark);

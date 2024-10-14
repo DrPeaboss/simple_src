@@ -128,16 +128,16 @@ impl Converter {
 
 impl NextSample for Converter {
     #[inline]
-    fn next_sample<F>(&mut self, f: &mut F) -> Option<f64>
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
-        F: FnMut() -> Option<f64>,
+        I: Iterator<Item = f64>,
     {
         loop {
             match self.state {
                 State::Normal => {
                     while self.pos >= 1.0 {
                         self.pos -= 1.0;
-                        if let Some(s) = f() {
+                        if let Some(s) = iter.next() {
                             self.buf.pop_front();
                             self.buf.push_back(s);
                         } else {
@@ -150,7 +150,7 @@ impl NextSample for Converter {
                     return Some(interp);
                 }
                 State::Suspend => {
-                    if let Some(s) = f() {
+                    if let Some(s) = iter.next() {
                         self.buf.pop_front();
                         self.buf.push_back(s);
                         self.state = State::Normal;

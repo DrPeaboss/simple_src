@@ -22,14 +22,14 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.cvtr.next_sample(&mut || self.iter.next())
+        self.cvtr.next_sample(&mut self.iter)
     }
 }
 
 trait NextSample {
-    fn next_sample<F>(&mut self, f: &mut F) -> Option<f64>
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
-        F: FnMut() -> Option<f64>;
+        I: Iterator<Item = f64>;
 }
 
 pub trait Convert {

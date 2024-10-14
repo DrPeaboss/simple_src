@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use super::NextSample;
+use super::Convert;
 
 #[inline]
 fn sinc_c(x: f64, cutoff: f64) -> f64 {
@@ -126,7 +126,7 @@ impl Converter {
     }
 }
 
-impl NextSample for Converter {
+impl Convert for Converter {
     #[inline]
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where

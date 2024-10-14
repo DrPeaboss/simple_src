@@ -1,4 +1,4 @@
-use super::NextSample;
+use super::Convert;
 
 enum State {
     First,
@@ -25,7 +25,7 @@ impl Converter {
     }
 }
 
-impl NextSample for Converter {
+impl Convert for Converter {
     #[inline]
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where

@@ -16,7 +16,7 @@ impl<'a, I, C> ConvertIter<'a, I, C> {
 impl<I, C> Iterator for ConvertIter<'_, I, C>
 where
     I: Iterator<Item = f64>,
-    C: NextSample,
+    C: Convert,
 {
     type Item = f64;
 
@@ -26,22 +26,17 @@ where
     }
 }
 
-trait NextSample {
-    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
-    where
-        I: Iterator<Item = f64>;
-}
-
 pub trait Convert {
-    fn process<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self>
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
         I: Iterator<Item = f64>,
         Self: Sized;
-}
 
-impl<T: NextSample> Convert for T {
-    #[inline]
-    fn process<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self> {
+    fn process<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self>
+    where
+        I: Iterator<Item = f64>,
+        Self: Sized,
+    {
         ConvertIter::new(iter, self)
     }
 }

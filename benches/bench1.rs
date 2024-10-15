@@ -47,14 +47,15 @@ const TRANS48K: f64 = 4000.0 / 24000.0;
 
 #[divan::bench(args=[Conv::C44k48k, Conv::C44k96k, Conv::C48k44k, Conv::C48k96k, Conv::C96k44k, Conv::C96k48k])]
 fn init_a120(conv: &Conv) -> Manager {
-    match conv {
+    let m = match conv {
         Conv::C44k48k => Manager::new(R44K48K, 120.0, 512, TRANS44K),
         Conv::C44k96k => Manager::new(R44K96K, 120.0, 512, TRANS44K),
         Conv::C48k44k => Manager::new(R48K44K, 120.0, 512, TRANS44K),
         Conv::C48k96k => Manager::new(R48K96K, 120.0, 512, TRANS48K),
         Conv::C96k44k => Manager::new(R96K44K, 120.0, 512, TRANS44K),
         Conv::C96k48k => Manager::new(R96K48K, 120.0, 512, TRANS48K),
-    }
+    };
+    m.unwrap()
 }
 
 #[divan::bench(
@@ -74,14 +75,15 @@ fn proc_a120_10ms(bencher: divan::Bencher, conv: &Conv) {
 
 #[divan::bench(args=[Conv::C44k48k, Conv::C44k96k, Conv::C48k44k, Conv::C48k96k, Conv::C96k44k, Conv::C96k48k])]
 fn init_a144(conv: &Conv) -> Manager {
-    match conv {
+    let m = match conv {
         Conv::C44k48k => Manager::new(R44K48K, 144.0, 2048, TRANS44K),
         Conv::C44k96k => Manager::new(R44K96K, 144.0, 2048, TRANS44K),
         Conv::C48k44k => Manager::new(R48K44K, 144.0, 2048, TRANS44K),
         Conv::C48k96k => Manager::new(R48K96K, 144.0, 2048, TRANS48K),
         Conv::C96k44k => Manager::new(R96K44K, 144.0, 2048, TRANS44K),
         Conv::C96k48k => Manager::new(R96K48K, 144.0, 2048, TRANS48K),
-    }
+    };
+    m.unwrap()
 }
 
 #[divan::bench(

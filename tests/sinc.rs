@@ -13,7 +13,8 @@ impl Src {
         Self {
             sr_old,
             sr_new,
-            manager: sinc::Manager::with_order(sr_new as f64 / sr_old as f64, atten, quan, order),
+            manager: sinc::Manager::with_order(sr_new as f64 / sr_old as f64, atten, quan, order)
+                .unwrap(),
         }
     }
 
@@ -27,7 +28,8 @@ impl Src {
         Self {
             sr_old,
             sr_new,
-            manager: sinc::Manager::new(sr_new as f64 / sr_old as f64, atten, quan, trans_width),
+            manager: sinc::Manager::new(sr_new as f64 / sr_old as f64, atten, quan, trans_width)
+                .unwrap(),
         }
     }
 }
@@ -334,7 +336,7 @@ fn ta150_1_192k_down_order() {
 #[test]
 #[ignore = "display only"]
 fn tmultithread() {
-    let manager = sinc::Manager::new(2.0, 30.0, 16, 0.1);
+    let manager = sinc::Manager::new(2.0, 30.0, 16, 0.1).unwrap();
     let manager2 = manager.clone();
     let h1 = std::thread::spawn(move || {
         let mut converter = manager.converter();

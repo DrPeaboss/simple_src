@@ -34,7 +34,7 @@ fn convert_to_48k() {
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(TARGET_FILE, spec).unwrap();
-    let manager = sinc::Manager::new(48000.0 / 44100.0, 110.0, 256, 2050.0 / 22050.0);
+    let manager = sinc::Manager::new(48000.0 / 44100.0, 110.0, 256, 2050.0 / 22050.0).unwrap();
     let latency = manager.latency();
     let mut converter1 = manager.converter();
     let mut converter2 = manager.converter();

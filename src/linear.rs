@@ -1,6 +1,6 @@
 //! Linear converter
 
-use super::Convert;
+use super::{Convert, Error, Result};
 
 enum State {
     First,
@@ -17,7 +17,7 @@ pub struct Converter {
 
 impl Converter {
     #[inline]
-    pub fn new(step: f64) -> Self {
+    fn new(step: f64) -> Self {
         Self {
             step,
             pos: 0.0,
@@ -79,12 +79,45 @@ pub struct Manager {
 
 impl Manager {
     #[inline]
-    pub fn new(ratio: f64) -> Self {
-        Self { ratio }
+    pub fn new(ratio: f64) -> Result<Self> {
+        if ratio >= 0.01 && ratio <= 100.0 {
+            Ok(Self { ratio })
+        } else {
+            Err(Error::InvalidRatio)
+        }
     }
 
     #[inline]
     pub fn converter(&self) -> Converter {
         Converter::new(self.ratio.recip())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_manager_ok() {
+        let ratio_ok = vec![0.01, 1.0, 10.0, 99.99, 100.0];
+        for ratio in ratio_ok {
+            assert!(Manager::new(ratio).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_manager_err() {
+        let ratio_err = vec![
+            -1.0,
+            0.0,
+            100.01,
+            1000.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        for ratio in ratio_err {
+            assert!(Manager::new(ratio).is_err());
+        }
     }
 }

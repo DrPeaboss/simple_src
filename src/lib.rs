@@ -6,7 +6,7 @@
 //! use simple_src::{sinc, Convert};
 //!
 //! let samples = vec![1.0, 2.0, 3.0, 4.0];
-//! let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1);
+//! let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
 //! let mut converter = manager.converter();
 //! for s in converter.process(samples.into_iter()) {
 //!     println!("{s}");
@@ -62,6 +62,14 @@ pub trait Convert {
     }
 }
 
+#[derive(Debug)]
+pub enum Error {
+    InvalidRatio,
+    InvalidParam,
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,10 +81,11 @@ mod tests {
         #[allow(dead_code)]
         pub fn new(a: i32) -> Box<dyn Convert> {
             if a == 0 {
-                Box::new(linear::Converter::new(0.5))
+                let manager = linear::Manager::new(2.0).unwrap();
+                Box::new(manager.converter())
             } else {
-                let filter = std::sync::Arc::new(vec![]);
-                Box::new(sinc::Converter::new(0.5, 128, 128, filter))
+                let manager = sinc::Manager::new(2.0, 48.0, 8, 0.2).unwrap();
+                Box::new(manager.converter())
             }
         }
     }
@@ -85,7 +94,7 @@ mod tests {
     #[ignore = "display only"]
     fn test1() {
         let samples = vec![1.0, 2.0, 3.0, 4.0];
-        let manager = linear::Manager::new(2.0);
+        let manager = linear::Manager::new(2.0).unwrap();
         let mut cvtr = manager.converter();
         for s in cvtr.process(samples.into_iter()) {
             println!("sample = {s}");
@@ -96,7 +105,7 @@ mod tests {
     #[ignore = "display only"]
     fn test2() {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let manager = sinc::Manager::with_raw(2.0, 16, 4, 5.0, 1.0);
+        let manager = sinc::Manager::with_raw(2.0, 16, 4, 5.0, 1.0).unwrap();
         for s in manager
             .converter()
             .process(samples.into_iter())
@@ -110,7 +119,7 @@ mod tests {
     #[ignore = "display only"]
     fn test3() {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let manager = sinc::Manager::with_order(2.0, 30.0, 16, 4);
+        let manager = sinc::Manager::with_order(2.0, 30.0, 16, 4).unwrap();
         for s in manager
             .converter()
             .process(samples.into_iter())

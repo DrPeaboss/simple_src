@@ -22,6 +22,7 @@ fn convert(file_prefix: &str, sr_old: u32, sr_new: u32) {
         .map(|s| s.unwrap() as f64)
         .chain(std::iter::repeat(0.0));
     Manager::new(ratio)
+        .unwrap()
         .converter()
         .process(in_iter)
         .take(out_duration)
@@ -45,7 +46,7 @@ fn tlinear() {
 #[test]
 #[ignore = "display only"]
 fn tmultithread() {
-    let manager = Manager::new(2.0);
+    let manager = Manager::new(2.0).unwrap();
     let h1 = std::thread::spawn(move || {
         let mut converter = manager.converter();
         let samples = (0..10).map(|x| x as f64);

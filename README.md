@@ -11,7 +11,7 @@ let samples = vec![1.0, 2.0, 3.0, 4.0];
 let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1);
 let mut converter = manager.converter();
 for s in converter.process(samples.into_iter()) {
-    println("{s}");
+    println!("{s}");
 }
 ```
 
@@ -34,7 +34,7 @@ Recommended initialization parameters for *sinc* converter:
 with `sinc::Manager::new` or `sinc::Manager::with_order`, or use
 `sinc::Manager::with_raw` with the raw parameters calculated by self.
 
-The relationship between *attenuation* and *quantify* is about *A = 12 \* log2(Q) + 12*.
+The relationship between *attenuation* and *quantify* is about *Q = 2 ^ (A / 12 - 1)*.
 
 Due to the amount of calculation and the size of LUT, A = 144 or 156 for 24bit
 audio is usually fine, and for 16bit, A = 120 is enough.

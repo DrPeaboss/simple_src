@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+use num_rational::Rational64;
+
 use super::{Convert, Error, Result};
 
 #[inline]
@@ -82,8 +84,10 @@ enum State {
 }
 
 pub struct Converter {
-    step: f64,
-    pos: f64,
+    numer: usize,
+    denom: usize,
+    pos: usize,
+    coefs: Vec<f64>,
     half_order: f64,
     quan: f64,
     filter: Arc<Vec<f64>>,
@@ -94,12 +98,21 @@ pub struct Converter {
 impl Converter {
     #[inline]
     fn new(step: f64, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
+        let rstep = Rational64::approximate_float(step).unwrap();
+        let numer = *rstep.numer() as usize;
+        let denom = *rstep.denom() as usize;
+        let mut coefs = Vec::with_capacity(denom);
+        for i in 0..denom {
+            coefs.push(i as f64 / denom as f64);
+        }
         let taps = (order + 1) as usize;
         let mut buf = VecDeque::with_capacity(taps);
         buf.extend(std::iter::repeat(0.0).take(taps));
         Self {
-            step,
-            pos: 0.0,
+            numer,
+            denom,
+            pos: 0,
+            coefs,
             half_order: 0.5 * order as f64,
             quan: quan as f64,
             filter,
@@ -110,7 +123,7 @@ impl Converter {
 
     #[inline]
     fn interpolate(&self) -> f64 {
-        let coef = self.pos;
+        let coef = self.coefs[self.pos];
         let mut interp = 0.0;
         let pos_max = self.filter.len() - 1;
         for (i, s) in self.buf.iter().enumerate() {
@@ -137,8 +150,8 @@ impl Convert for Converter {
         loop {
             match self.state {
                 State::Normal => {
-                    while self.pos >= 1.0 {
-                        self.pos -= 1.0;
+                    while self.pos >= self.denom {
+                        self.pos -= self.denom;
                         if let Some(s) = iter.next() {
                             self.buf.pop_front();
                             self.buf.push_back(s);
@@ -147,8 +160,8 @@ impl Convert for Converter {
                             return None;
                         }
                     }
-                    self.pos += self.step;
                     let interp = self.interpolate();
+                    self.pos += self.numer;
                     return Some(interp);
                 }
                 State::Suspend => {

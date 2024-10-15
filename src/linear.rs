@@ -1,5 +1,7 @@
 //! Linear converter
 
+use num_rational::Rational64;
+
 use super::{Convert, Error, Result};
 
 enum State {
@@ -9,8 +11,10 @@ enum State {
 }
 
 pub struct Converter {
-    step: f64,
-    pos: f64,
+    numer: usize,
+    denom: usize,
+    pos: usize,
+    coefs: Vec<f64>,
     last_in: [f64; 2],
     state: State,
 }
@@ -18,9 +22,18 @@ pub struct Converter {
 impl Converter {
     #[inline]
     fn new(step: f64) -> Self {
+        let rstep = Rational64::approximate_float(step).unwrap();
+        let numer = *rstep.numer() as usize;
+        let denom = *rstep.denom() as usize;
+        let mut coefs = Vec::with_capacity(denom);
+        for i in 0..denom {
+            coefs.push(i as f64 / denom as f64);
+        }
         Self {
-            step,
-            pos: 0.0,
+            numer,
+            denom,
+            pos: 0,
+            coefs,
             last_in: [0.0; 2],
             state: State::First,
         }
@@ -38,15 +51,15 @@ impl Convert for Converter {
                 State::First => {
                     if let Some(s) = iter.next() {
                         self.last_in[1] = s;
-                        self.pos = 1.0;
+                        self.pos = self.numer;
                         self.state = State::Normal;
                     } else {
                         return None;
                     }
                 }
                 State::Normal => {
-                    while self.pos >= 1.0 {
-                        self.pos -= 1.0;
+                    while self.pos >= self.denom {
+                        self.pos -= self.denom;
                         self.last_in[0] = self.last_in[1];
                         if let Some(s) = iter.next() {
                             self.last_in[1] = s;
@@ -55,8 +68,9 @@ impl Convert for Converter {
                             return None;
                         }
                     }
-                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * self.pos;
-                    self.pos += self.step;
+                    let coef = self.coefs[self.pos];
+                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
+                    self.pos += self.numer;
                     return Some(interp);
                 }
                 State::Suspend => {

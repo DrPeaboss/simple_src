@@ -165,6 +165,17 @@ impl Convert for Converter {
     }
 }
 
+use super::{MAX_RATIO, MIN_RATIO};
+
+const MIN_ORDER: u32 = 1;
+const MAX_ORDER: u32 = 2048;
+const MIN_QUAN: u32 = 1;
+const MAX_QUAN: u32 = 16384;
+const MIN_CUTOFF: f64 = 0.01;
+const MAX_CUTOFF: f64 = 1.0;
+const MIN_ATTEN: f64 = 12.0;
+const MAX_ATTEN: f64 = 180.0;
+
 #[derive(Clone)]
 pub struct Manager {
     ratio: f64,
@@ -190,17 +201,13 @@ impl Manager {
         kaiser_beta: f64,
         cutoff: f64,
     ) -> Result<Self> {
-        if ratio < 0.01 || ratio > 100.0 {
+        if !(MIN_RATIO..=MAX_RATIO).contains(&ratio) {
             return Err(Error::InvalidRatio);
         }
-        if quan == 0
-            || quan > 16384
-            || order == 0
-            || order > 2048
-            || kaiser_beta < 0.0
-            || kaiser_beta > 20.0
-            || cutoff < 0.01
-            || cutoff > 1.0
+        if !(MIN_QUAN..=MAX_QUAN).contains(&quan)
+            || !(MIN_ORDER..=MAX_ORDER).contains(&order)
+            || !(0.0..=20.0).contains(&kaiser_beta)
+            || !(MIN_CUTOFF..=MAX_CUTOFF).contains(&cutoff)
         {
             return Err(Error::InvalidParam);
         }
@@ -225,15 +232,12 @@ impl Manager {
     /// - trans_width: the transition band width in [0.01, 1.0]
     #[inline]
     pub fn new(ratio: f64, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
-        if ratio < 0.01 || ratio > 100.0 {
+        if !(MIN_RATIO..=MAX_RATIO).contains(&ratio) {
             return Err(Error::InvalidRatio);
         }
-        if atten < 12.0
-            || atten > 180.0
-            || quan == 0
-            || quan > 16384
-            || trans_width < 0.01
-            || trans_width > 1.0
+        if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
+            || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
+            || !(0.01..=1.0).contains(&trans_width)
         {
             return Err(Error::InvalidParam);
         }
@@ -253,10 +257,12 @@ impl Manager {
     /// - order: [1, 2048]
     #[inline]
     pub fn with_order(ratio: f64, atten: f64, quan: u32, order: u32) -> Result<Self> {
-        if ratio < 0.01 || ratio > 100.0 {
+        if !(MIN_RATIO..=MAX_RATIO).contains(&ratio) {
             return Err(Error::InvalidRatio);
         }
-        if atten < 12.0 || atten > 180.0 || quan == 0 || quan > 16384 || order == 0 || order > 2048
+        if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
+            || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
+            || !(MIN_ORDER..=MAX_ORDER).contains(&order)
         {
             return Err(Error::InvalidParam);
         }
@@ -296,35 +302,34 @@ mod tests {
 
     #[test]
     fn test_manager_with_raw() {
-        assert!(Manager::with_raw(2.0, 48, 32, 5.0, 0.8).is_ok());
-        assert!(Manager::with_raw(0.01, 48, 32, 5.0, 0.8).is_ok());
-        assert!(Manager::with_raw(100.0, 48, 32, 5.0, 0.8).is_ok());
-        assert!(Manager::with_raw(0.009, 48, 32, 5.0, 0.8).is_err());
-        assert!(Manager::with_raw(100.1, 48, 32, 5.0, 0.8).is_err());
+        assert!(Manager::with_raw(2.0, 32, 32, 5.0, 0.8).is_ok());
+        assert!(Manager::with_raw(0.01, 32, 32, 5.0, 0.8).is_ok());
+        assert!(Manager::with_raw(100.0, 32, 32, 5.0, 0.8).is_ok());
+        assert!(Manager::with_raw(0.009, 32, 32, 5.0, 0.8).is_err());
+        assert!(Manager::with_raw(100.1, 32, 32, 5.0, 0.8).is_err());
         assert!(Manager::with_raw(2.0, 0, 32, 5.0, 0.8).is_err());
-        assert!(Manager::with_raw(2.0, 48, 0, 5.0, 0.8).is_err());
-        assert!(Manager::with_raw(2.0, 48, 32, 5.0, -0.1).is_err());
-        assert!(Manager::with_raw(2.0, 48, 32, 5.0, 1.1).is_err());
-        assert!(Manager::with_raw(2.0, 48, 32, -0.1, 0.8).is_err());
+        assert!(Manager::with_raw(2.0, 32, 0, 5.0, 0.8).is_err());
+        assert!(Manager::with_raw(2.0, 32, 32, 5.0, -0.1).is_err());
+        assert!(Manager::with_raw(2.0, 32, 32, 5.0, 1.1).is_err());
+        assert!(Manager::with_raw(2.0, 32, 32, -0.1, 0.8).is_err());
     }
 
     #[test]
     fn test_manager_new() {
-        assert!(Manager::new(2.0, 96.0, 128, 0.1).is_ok());
-        assert!(Manager::new(2.0, 96.0, 0, 0.1).is_err());
-        assert!(Manager::new(2.0, 96.0, 128, 0.0).is_err());
-        assert!(Manager::new(2.0, 96.0, 128, 1.1).is_err());
-        assert!(Manager::new(2.0, 4.0, 128, 0.1).is_err());
-        assert!(Manager::new(2.0, 8.0, 128, 0.1).is_err());
-        assert!(Manager::new(2.0, 8.1, 128, 0.1).is_ok());
+        assert!(Manager::new(2.0, 72.0, 32, 0.1).is_ok());
+        assert!(Manager::new(2.0, 72.0, 0, 0.1).is_err());
+        assert!(Manager::new(2.0, 72.0, 32, 0.0).is_err());
+        assert!(Manager::new(2.0, 72.0, 32, 1.1).is_err());
+        assert!(Manager::new(2.0, 12.0, 32, 0.1).is_ok());
+        assert!(Manager::new(2.0, 11.9, 32, 0.1).is_err());
     }
 
     #[test]
     fn test_manager_with_order() {
-        assert!(Manager::with_order(2.0, 96.0, 128, 128).is_ok());
-        assert!(Manager::with_order(2.0, 96.0, 128, 0).is_err());
-        assert!(Manager::with_order(2.0, 96.0, 0, 128).is_err());
-        assert!(Manager::with_order(2.0, 8.0, 128, 128).is_err());
-        assert!(Manager::with_order(2.0, 8.1, 128, 128).is_ok());
+        assert!(Manager::with_order(2.0, 72.0, 32, 32).is_ok());
+        assert!(Manager::with_order(2.0, 72.0, 32, 0).is_err());
+        assert!(Manager::with_order(2.0, 72.0, 0, 32).is_err());
+        assert!(Manager::with_order(2.0, 12.0, 32, 32).is_ok());
+        assert!(Manager::with_order(2.0, 11.9, 32, 32).is_err());
     }
 }

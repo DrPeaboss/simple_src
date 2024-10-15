@@ -62,6 +62,9 @@ pub trait Convert {
     }
 }
 
+const MIN_RATIO: f64 = 0.01;
+const MAX_RATIO: f64 = 100.0;
+
 #[derive(Debug)]
 pub enum Error {
     InvalidRatio,

@@ -72,6 +72,8 @@ impl Convert for Converter {
     }
 }
 
+use super::{MAX_RATIO, MIN_RATIO};
+
 #[derive(Clone, Copy)]
 pub struct Manager {
     ratio: f64,
@@ -80,7 +82,7 @@ pub struct Manager {
 impl Manager {
     #[inline]
     pub fn new(ratio: f64) -> Result<Self> {
-        if ratio >= 0.01 && ratio <= 100.0 {
+        if (MIN_RATIO..=MAX_RATIO).contains(&ratio) {
             Ok(Self { ratio })
         } else {
             Err(Error::InvalidRatio)

@@ -8,7 +8,7 @@ Usage:
 use simple_src::{sinc, Convert};
 
 let samples = vec![1.0, 2.0, 3.0, 4.0];
-let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1);
+let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
 let mut converter = manager.converter();
 for s in converter.process(samples.into_iter()) {
     println!("{s}");
@@ -43,8 +43,10 @@ For multi-channel example see [examples/two_channels.rs](/examples/two_channels.
 
 The *linear* Converter is not recommended unless performance is really important.
 
-Use [plots.py](/plots.py) to show the result of tests. It need *numpy*, *scipy*
+Use [plots.py](/plots.py) to show the results of conversion. It needs *numpy*, *scipy*
 and *matplotlib*.
+
+Here is an example showing the results of a downsampling 96kHz:
 
 ```
 $ cargo test -r --test testwav -- --ignored --exact --show-output generate
@@ -59,6 +61,6 @@ $ python
 >>> plots.impulse('impulse_96k_44k_s_a120_2.wav', True)
 ```
 
-See [tests](/tests/) for more details.
+See code in [tests](/tests/) for more details.
 
 Reference <https://ccrma.stanford.edu/~jos/resample/resample.html>

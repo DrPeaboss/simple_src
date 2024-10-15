@@ -43,13 +43,20 @@ For multi-channel example see [examples/two_channels.rs](/examples/two_channels.
 
 The *linear* Converter is not recommended unless performance is really important.
 
-Use [plots.py](/plots.py) to show the result of tests.
+Use [plots.py](/plots.py) to show the result of tests. It need *numpy*, *scipy*
+and *matplotlib*.
 
-```python
+```
+$ cargo test -r --test testwav -- --ignored --exact --show-output generate
+$ cargo test -r --test sinc -- --ignored --exact --show-output ta120_2_96k_down
+$ python
+>>> import plots
 >>> import os
 >>> os.chdir('output')
->>> import plots
->>> plots.show_wav_spectrogram('sweep_96k_44k_xxx.wav')
+>>> plots.spectrum('beep_96k_44k_s_a120_2.wav')
+>>> plots.spectrogram('sweep_96k_44k_s_a120_2.wav')
+>>> plots.impulse('impulse_96k_44k_s_a120_2.wav')
+>>> plots.impulse('impulse_96k_44k_s_a120_2.wav', True)
 ```
 
 See [tests](/tests/) for more details.

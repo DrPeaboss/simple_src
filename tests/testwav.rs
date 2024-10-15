@@ -79,7 +79,10 @@ fn generate() {
     std::env::set_current_dir("output").unwrap();
     gen_beep(44100);
     gen_beep(48000);
+    gen_beep(96000);
+    gen_beep(192000);
     gen_sweep(44100);
     gen_sweep(48000);
     gen_sweep(96000);
+    gen_sweep(192000);
 }

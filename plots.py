@@ -4,7 +4,7 @@ from scipy.io import wavfile
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import kaiser
 
-def _show_spectrum(fs, data, name, impulse: None | str = None):
+def _spectrum(fs, data, name, impulse: None | str = None):
     passband = impulse == 'passband'
     N = len(data)
     half_N = N // 2
@@ -27,19 +27,19 @@ def _show_spectrum(fs, data, name, impulse: None | str = None):
     plt.title(prefix + name)
     plt.show()
 
-def show_wav_spectrum(filename):
+def spectrum(filename):
     fs, data = wavfile.read(filename)
-    _show_spectrum(fs, data, filename)
+    _spectrum(fs, data, filename)
 
-def show_wav_impulse(filename, passband=False):
+def impulse(filename, passband=False):
     fs, data = wavfile.read(filename)
-    _show_spectrum(fs, data, filename, impulse='passband' if passband else '')
+    _spectrum(fs, data, filename, impulse='passband' if passband else '')
 
-def show_raw_impulse(filename, fs, passband=False):
+def raw_impulse(filename, fs, passband=False):
     data = np.fromfile(filename, np.float64)
-    _show_spectrum(fs, data, filename, impulse='passband' if passband else '')
+    _spectrum(fs, data, filename, impulse='passband' if passband else '')
 
-def show_wav_spectrogram(filename):
+def spectrogram(filename):
     fs, data = wavfile.read(filename)
     N = len(data)
     window_size = 2048

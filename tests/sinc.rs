@@ -296,11 +296,13 @@ fn ta120_2_96k_down() {
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(96000, 44100, 120.0, 512, trans_width);
     println!("order of 96 to 44k {remark} is {}", src.manager.order());
+    convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
     let trans_width = 4000.0 / 24000.0;
     let src = Src::new_by_trans_width(96000, 48000, 120.0, 512, trans_width);
     println!("order of 96k to 48k {remark} is {}", src.manager.order());
+    convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
 }

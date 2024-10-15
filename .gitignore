@@ -2,3 +2,4 @@
 /output
 /perf*
 /flamegraph.svg
+/__pycache__

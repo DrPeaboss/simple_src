@@ -1,3 +1,5 @@
+//! Linear converter
+
 use super::Convert;
 
 enum State {

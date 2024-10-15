@@ -1,3 +1,5 @@
+//! Sinc interpolation converter
+
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -173,6 +175,14 @@ pub struct Manager {
 }
 
 impl Manager {
+    /// Create a `Manager` with raw parameters, that means all of these should
+    /// be calculated in advance.
+    ///
+    /// - ratio: the conversion ratio, fs_new / fs_old
+    /// - quan: the quantify number, usually power of 2
+    /// - order: the order of interpolation FIR filter
+    /// - kaiser_beta: the beta parameter of kaiser window method
+    /// - cutoff: the cutoff of FIR filter, according to target sample rate
     pub fn with_raw(ratio: f64, quan: u32, order: u32, kaiser_beta: f64, cutoff: f64) -> Self {
         let filter = generate_filter_table(quan, order, kaiser_beta, cutoff);
         let latency = (ratio * order as f64 * 0.5).round() as usize;
@@ -185,6 +195,14 @@ impl Manager {
         }
     }
 
+    /// Create a `Manager` with attenuation, quantify and transition band width.
+    ///
+    /// That means the order will be calculated.
+    ///
+    /// - ratio: the conversion ratio, fs_new / fs_old
+    /// - atten: the attenuation in dB
+    /// - quan: the quantify number, usually power of 2
+    /// - trans_width: the transition band width in (0,1)
     #[inline]
     pub fn new(ratio: f64, atten: f64, quan: u32, trans_width: f64) -> Self {
         let kaiser_beta = calc_kaiser_beta(atten);
@@ -193,6 +211,9 @@ impl Manager {
         Self::with_raw(ratio, quan, order, kaiser_beta, cutoff)
     }
 
+    /// Create a `Manager` with attenuation, quantify and order
+    ///
+    /// That means the transition band will be calculated.
     #[inline]
     pub fn with_order(ratio: f64, atten: f64, quan: u32, order: u32) -> Self {
         let kaiser_beta = calc_kaiser_beta(atten);
@@ -201,6 +222,7 @@ impl Manager {
         Self::with_raw(ratio, quan, order, kaiser_beta, cutoff)
     }
 
+    /// Create a `Converter` which actually implement the interpolation.
     #[inline]
     pub fn converter(&self) -> Converter {
         Converter::new(
@@ -211,11 +233,13 @@ impl Manager {
         )
     }
 
+    /// Get the latency of the FIR filter.
     #[inline]
     pub fn latency(&self) -> usize {
         self.latency
     }
 
+    /// Get the order of the FIR filter.
     #[inline]
     pub fn order(&self) -> u32 {
         self.order

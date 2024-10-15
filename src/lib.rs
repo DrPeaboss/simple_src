@@ -1,3 +1,19 @@
+//! Simple sample rate conversion lib.
+//!
+//! ## Usage
+//!
+//! ```
+//! use simple_src::{sinc, Convert};
+//!
+//! let samples = vec![1.0, 2.0, 3.0, 4.0];
+//! let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1);
+//! let mut converter = manager.converter();
+//! for s in converter.process(samples.into_iter()) {
+//!     println!("{s}");
+//! }
+//! ```
+//!
+
 pub mod linear;
 pub mod sinc;
 
@@ -27,11 +43,16 @@ where
 }
 
 pub trait Convert {
+    /// Get the next sample converted, return `None` until the input samples is
+    /// not enough.
+    ///
+    /// Note that the output can be continued after `None` returned.
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
         I: Iterator<Item = f64>,
         Self: Sized;
 
+    /// Process samples and return an iterator, can be called multiple times.
     fn process<I>(&mut self, iter: I) -> ConvertIter<'_, I, Self>
     where
         I: Iterator<Item = f64>,

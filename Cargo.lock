@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "simple_src"
-version = "0.2.0-preview"
+version = "0.2.0"
 dependencies = [
  "divan",
  "hound",

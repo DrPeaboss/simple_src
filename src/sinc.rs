@@ -110,19 +110,45 @@ impl Converter {
 
     #[inline]
     fn interpolate(&self) -> f64 {
-        let coef = self.pos;
         let mut interp = 0.0;
         let pos_max = self.filter.len() - 1;
-        for (i, s) in self.buf.iter().enumerate() {
-            let index = i as f64 - self.half_order;
-            let pos = (coef - index).abs() * self.quan;
-            let pos_n = pos as usize;
-            if pos_n < pos_max {
-                let h1 = self.filter[pos_n];
-                let h2 = self.filter[pos_n + 1];
-                let h = h1 + (h2 - h1) * (pos - pos_n as f64);
-                interp += s * h;
+        let taps = self.buf.len();
+        let iter_count = taps / 2;
+        let mut left;
+        let mut right;
+        if taps % 2 == 1 {
+            let pos = self.pos * self.quan;
+            let posu = pos as usize;
+            let h1 = self.filter[posu];
+            let h2 = self.filter[posu + 1];
+            let h = h1 + (h2 - h1) * (pos - posu as f64);
+            interp += self.buf[iter_count] * h;
+            left = iter_count - 1;
+            right = iter_count + 1;
+        } else {
+            left = iter_count - 1;
+            right = iter_count;
+        }
+        let coef = self.pos + self.half_order;
+        for _ in 0..iter_count {
+            let pos1 = (coef - left as f64).abs() * self.quan;
+            let pos2 = (coef - right as f64).abs() * self.quan;
+            let pos1u = pos1 as usize;
+            let pos2u = pos2 as usize;
+            if pos1u < pos_max {
+                let h1 = self.filter[pos1u];
+                let h2 = self.filter[pos1u + 1];
+                let h = h1 + (h2 - h1) * (pos1 - pos1u as f64);
+                interp += self.buf[left] * h;
             }
+            if pos2u < pos_max {
+                let h1 = self.filter[pos2u];
+                let h2 = self.filter[pos2u + 1];
+                let h = h1 + (h2 - h1) * (pos2 - pos2u as f64);
+                interp += self.buf[right] * h;
+            }
+            left = left.wrapping_sub(1);
+            right = right.wrapping_add(1);
         }
         interp
     }

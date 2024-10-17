@@ -2,7 +2,14 @@
 
 A simple sample rate conversion lib for audio.
 
-Usage:
+## Usage
+
+Usually use *sinc* Converter, it is flexible and high-quality.
+The *linear* Converter is not recommended unless performance is really important.
+
+### sinc
+
+With new method:
 
 ```rust
 use simple_src::{sinc, Convert};
@@ -14,6 +21,42 @@ for s in converter.process(samples.into_iter()) {
     println!("{s}");
 }
 ```
+
+Or use builder:
+
+```rust
+use simple_src::{sinc, Convert};
+
+let samples = vec![1.0, 2.0, 3.0, 4.0];
+let manager = sinc::Manager::builder()
+    .ratio(2.0)
+    .attenuation(48.0)
+    .quantify(8)
+    .pass_width(0.9)
+    .build()
+    .unwrap();
+let mut converter = manager.converter();
+for s in converter.process(samples.into_iter()) {
+    println!("{s}");
+}
+```
+
+For multi-channel example see [two_channels.rs](/examples/two_channels.rs).
+
+### linear
+
+```rust
+use simple_src::{linear, Convert};
+
+let samples = vec![1.0, 2.0, 3.0, 4.0];
+let manager = linear::Manager::new(2.0).unwrap();
+let mut converter = manager.converter();
+for s in converter.process(samples.into_iter()) {
+    println!("{s}");
+}
+```
+
+## Sinc parameters
 
 Recommended initialization parameters for *sinc* converter:
 
@@ -31,17 +74,13 @@ Recommended initialization parameters for *sinc* converter:
 | 24bit medium | 156         | 4096     |
 | 24bit better | 168         | 8192     |
 
-with `sinc::Manager::new` or `sinc::Manager::with_order`, or use
-`sinc::Manager::with_raw` with the raw parameters calculated by self.
-
-The relationship between *attenuation* and *quantify* is about *Q = 2 ^ (A / 12 - 1)*.
+The relationship between *attenuation* and *quantify* is about
+*Q = 2 ^ (A / 12 - 1)*, *A = 12 + 12 * log2(Q)*.
 
 Due to the amount of calculation and the size of LUT, A = 144 or 156 for 24bit
 audio is usually fine, and for 16bit, A = 120 is enough.
 
-For multi-channel example see [examples/two_channels.rs](/examples/two_channels.rs).
-
-The *linear* Converter is not recommended unless performance is really important.
+## Plots
 
 Use [plots.py](/plots.py) to show the results of conversion. It needs *numpy*, *scipy*
 and *matplotlib*.
@@ -63,4 +102,9 @@ $ python
 
 See code in [tests](/tests/) for more details.
 
-Reference <https://ccrma.stanford.edu/~jos/resample/resample.html>
+## References
+
+1. Smith, J.O. Digital Audio Resampling Home Page
+    https://ccrma.stanford.edu/~jos/resample/.
+2. Alan V. Oppenheim, Ronald W. Schafer.
+    Discrete-Time Signal Processing, Thrid Edition.

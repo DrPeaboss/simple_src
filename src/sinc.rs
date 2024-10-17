@@ -1,4 +1,36 @@
 //! Sinc interpolation converter
+//!
+//! ## Simple way
+//!
+//! ```
+//! use simple_src::{sinc, Convert};
+//!
+//! let samples = vec![1.0, 2.0, 3.0, 4.0];
+//! let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
+//! let mut converter = manager.converter();
+//! for s in converter.process(samples.into_iter()) {
+//!     println!("{s}");
+//! }
+//! ```
+//!
+//! ## Builder way
+//!
+//! ```
+//! use simple_src::{sinc, Convert};
+//!
+//! let samples = vec![1.0, 2.0, 3.0, 4.0];
+//! let manager = sinc::Manager::builder()
+//!     .ratio(2.0)
+//!     .attenuation(48.0)
+//!     .quantify(8)
+//!     .pass_width(0.9)
+//!     .build()
+//!     .unwrap();
+//! let mut converter = manager.converter();
+//! for s in converter.process(samples.into_iter()) {
+//!     println!("{s}");
+//! }
+//! ```
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
@@ -289,7 +321,8 @@ impl Manager {
     /// Create a `Manager` with raw parameters, that means all of these should
     /// be calculated in advance.
     ///
-    /// - ratio: the conversion ratio, fs_new / fs_old, support `[0.1, 10.0]`
+    /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`,
+    ///   the numerator after reduction should <= 1024
     /// - quan: the quantify number, usually power of 2, support `[1, 16384]`
     /// - order: the order of interpolation FIR filter, support `[1, 2048]`
     /// - kaiser_beta: the beta parameter of kaiser window method, support `[0.0, 20.0]`
@@ -309,7 +342,8 @@ impl Manager {
     ///
     /// That means the order will be calculated.
     ///
-    /// - ratio: the conversion ratio, fs_new / fs_old, support `[0.1, 10.0]`
+    /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`,
+    ///   the numerator after reduction should <= 1024
     /// - atten: the attenuation in dB, support `[12.0, 180.0]`
     /// - quan: the quantify number, usually power of 2, support `[1, 16384]`
     /// - trans_width: the transition band width in `[0.01, 1.0]`
@@ -323,7 +357,7 @@ impl Manager {
     ///
     /// That means the transition band will be calculated.
     ///
-    /// - ratio: `[0.1, 10.0]`
+    /// - ratio: `[1/16, 16]`
     /// - atten: `[12.0, 180.0]`
     /// - quan: `[1, 16384]`
     /// - order: `[1, 2048]`
@@ -333,6 +367,16 @@ impl Manager {
         Self::with_order_internal(ratio, atten, quan, order)
     }
 
+    /// Create a `Manager` with sample rate, attenuation, quantify and pass frequency
+    ///
+    /// - old_sr: Old sample rate, not 0
+    /// - new_sr: New sample rate, not 0
+    /// - atten: `[12.0, 180.0]`
+    /// - quan: `[1, 16384]`
+    /// - order: `[1, 2048]`
+    ///
+    /// The sample rate ratio should in `[1/16, 16]` and the numerator after
+    /// reduction cannot be greater than 1024
     #[inline]
     pub fn with_sample_rate(
         old_sr: u32,
@@ -376,12 +420,26 @@ impl Manager {
         self.order
     }
 
+    /// Create a `Builder` to build `Manager`
     #[inline]
     pub fn builder() -> Builder {
         Builder::default()
     }
 }
 
+/// The Builder to build `Manager`
+///
+/// ```
+/// use simple_src::sinc;
+///
+/// let manager = sinc::Manager::builder()
+///     .sample_rate(44100, 48000)
+///     .quantify(32)
+///     .attenuation(72)
+///     .pass_freq(20000)
+///     .build();
+/// assert!(manager.is_ok());
+/// ```
 #[derive(Default)]
 pub struct Builder {
     ratio: Option<Rational64>,
@@ -397,57 +455,89 @@ pub struct Builder {
 }
 
 impl Builder {
+    /// Set `ratio`, in `[1/16, 16]`, the numerator after reduction should <= 1024
     pub fn ratio(mut self, ratio: f64) -> Self {
         self.ratio = Some(Rational64::approximate_float(ratio).unwrap_or_default());
         self
     }
 
+    /// Set old sample rate and new sample rate
     pub fn sample_rate(mut self, old_sr: u32, new_sr: u32) -> Self {
         self.old_sr = Some(old_sr);
         self.new_sr = Some(new_sr);
         self
     }
 
+    /// Set quantify number in `[1, 16384]`
     pub fn quantify(mut self, quan: u32) -> Self {
         self.quan = Some(quan);
         self
     }
 
+    /// Set order of filter in `[1, 2048]`
     pub fn order(mut self, order: u32) -> Self {
         self.order = Some(order);
         self
     }
 
+    /// Set beta of kaiser window function in `[0, 20]`
     pub fn kaiser_beta<B: Into<f64>>(mut self, beta: B) -> Self {
         self.kaiser_beta = Some(beta.into());
         self
     }
 
+    /// Set cutoff of filter in `[0.01, 1.0]`
     pub fn cutoff(mut self, cutoff: f64) -> Self {
         self.cutoff = Some(cutoff);
         self
     }
 
+    /// Set attenuation of stop band in `[12, 180]`
     pub fn attenuation<A: Into<f64>>(mut self, atten: A) -> Self {
         self.atten = Some(atten.into());
         self
     }
 
+    /// Set transition band width in `[0.01, 1.0]`
     pub fn trans_width(mut self, width: f64) -> Self {
         self.trans_width = Some(width);
         self
     }
 
+    /// Set pass band width in `[0, 0.99]`
     pub fn pass_width(mut self, width: f64) -> Self {
         self.trans_width = Some(1.0 - width);
         self
     }
 
+    /// Set pass band frequency in Hz, the calculated transition band width
+    /// should not less than 0.01
     pub fn pass_freq(mut self, freq: u32) -> Self {
         self.pass_freq = Some(freq);
         self
     }
 
+    /// Build the `Manager`, there are the following combinations in order:
+    ///
+    /// - ratio, quantify, order, kaiser_beta, cutoff
+    /// - ratio, attenuation, quantify, trans_width or pass_width
+    /// - ratio, attenuation, quantify, order
+    /// - sample_rate, attenuation, quantify, pass_freq
+    ///
+    /// For example, this is the first situation:
+    ///
+    /// ```
+    /// use simple_src::sinc;
+    ///
+    /// let manager = sinc::Builder::default()
+    ///     .ratio(0.5)
+    ///     .quantify(32)
+    ///     .order(32)
+    ///     .kaiser_beta(7.0)
+    ///     .cutoff(0.8)
+    ///     .build();
+    /// assert!(manager.is_ok());
+    /// ```
     pub fn build(self) -> Result<Manager> {
         let (ratio, quan) = match (self.ratio, self.quan, self.old_sr, self.new_sr) {
             (Some(ratio), Some(quan), _, _) => (ratio, quan),

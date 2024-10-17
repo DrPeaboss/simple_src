@@ -1,4 +1,15 @@
-//! Linear converter
+//! Linear interpolation converter
+//!
+//! ```
+//! use simple_src::{linear, Convert};
+//!
+//! let samples = vec![1.0, 2.0, 3.0, 4.0];
+//! let manager = linear::Manager::new(2.0).unwrap();
+//! let mut converter = manager.converter();
+//! for s in converter.process(samples.into_iter()) {
+//!     println!("{s}");
+//! }
+//! ```
 
 use num_rational::Rational64;
 

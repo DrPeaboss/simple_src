@@ -2,17 +2,7 @@
 //!
 //! ## Usage
 //!
-//! ```
-//! use simple_src::{sinc, Convert};
-//!
-//! let samples = vec![1.0, 2.0, 3.0, 4.0];
-//! let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
-//! let mut converter = manager.converter();
-//! for s in converter.process(samples.into_iter()) {
-//!     println!("{s}");
-//! }
-//! ```
-//!
+//! See [sinc] or [linear]
 
 pub mod linear;
 pub mod sinc;

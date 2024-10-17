@@ -2,6 +2,8 @@
 
 use num_rational::Rational64;
 
+use crate::supported_ratio;
+
 use super::{Convert, Error, Result};
 
 enum State {
@@ -21,10 +23,9 @@ pub struct Converter {
 
 impl Converter {
     #[inline]
-    fn new(step: f64) -> Self {
-        let rstep = Rational64::approximate_float(step).unwrap();
-        let numer = *rstep.numer() as usize;
-        let denom = *rstep.denom() as usize;
+    fn new(step: Rational64) -> Self {
+        let numer = *step.numer() as usize;
+        let denom = *step.denom() as usize;
         let mut coefs = Vec::with_capacity(denom);
         for i in 0..denom {
             coefs.push(i as f64 / denom as f64);
@@ -86,20 +87,19 @@ impl Convert for Converter {
     }
 }
 
-use super::{MAX_RATIO, MIN_RATIO};
-
 #[derive(Clone, Copy)]
 pub struct Manager {
-    ratio: f64,
+    ratio: Rational64,
 }
 
 impl Manager {
     #[inline]
     pub fn new(ratio: f64) -> Result<Self> {
-        if (MIN_RATIO..=MAX_RATIO).contains(&ratio) {
+        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        if supported_ratio(ratio) {
             Ok(Self { ratio })
         } else {
-            Err(Error::InvalidRatio)
+            Err(Error::UnsupportedRatio)
         }
     }
 
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_manager_ok() {
-        let ratio_ok = vec![0.01, 1.0, 10.0, 99.99, 100.0];
+        let ratio_ok = vec![0.0625, 0.063, 1.0, 15.9, 16.0];
         for ratio in ratio_ok {
             assert!(Manager::new(ratio).is_ok());
         }
@@ -126,8 +126,9 @@ mod tests {
         let ratio_err = vec![
             -1.0,
             0.0,
-            100.01,
-            1000.0,
+            0.0624,
+            16.01,
+            0.123456,
             f64::INFINITY,
             f64::NEG_INFINITY,
             f64::NAN,

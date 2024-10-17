@@ -62,16 +62,22 @@ pub trait Convert {
     }
 }
 
-const MIN_RATIO: f64 = 0.01;
-const MAX_RATIO: f64 = 100.0;
-
 #[derive(Debug)]
 pub enum Error {
-    InvalidRatio,
+    UnsupportedRatio,
     InvalidParam,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+use num_rational::Rational64;
+
+fn supported_ratio(ratio: Rational64) -> bool {
+    ratio > Rational64::default()
+        && *ratio.numer() <= 1024
+        && ratio.ceil().to_integer() <= 16
+        && ratio.recip().ceil().to_integer() <= 16
+}
 
 #[cfg(test)]
 mod tests {

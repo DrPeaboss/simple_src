@@ -66,6 +66,7 @@ pub trait Convert {
 pub enum Error {
     UnsupportedRatio,
     InvalidParam,
+    NotEnoughParam,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

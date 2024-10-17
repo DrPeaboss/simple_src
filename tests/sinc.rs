@@ -32,6 +32,14 @@ impl Src {
                 .unwrap(),
         }
     }
+
+    fn new_by_builder(sr_old: u32, sr_new: u32, builder: sinc::Builder) -> Self {
+        Self {
+            sr_old,
+            sr_new,
+            manager: builder.build().unwrap(),
+        }
+    }
 }
 
 fn convert(file_prefix: &str, src: &Src, remark: &str) {
@@ -331,6 +339,34 @@ fn ta150_1_192k_down_order() {
     let trans_width = 4000.0 / 24000.0;
     let src = Src::new_by_trans_width(192000, 48000, 150.0, 2048, trans_width);
     println!("order of 192k to 48k a150 is {}", src.manager.order());
+}
+
+#[test]
+#[ignore = "slow"]
+// cargo test -r --test sinc -- --ignored --exact --show-output ta96_1
+fn ta96_1() {
+    cwd();
+    let remark = "a96_1";
+    let builder = sinc::Builder::default()
+        .sample_rate(44100, 48000)
+        .attenuation(96)
+        .quantify(128)
+        .pass_freq(20000);
+    let src = Src::new_by_builder(44100, 48000, builder);
+    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    convert("beep", &src, remark);
+    convert("sweep", &src, remark);
+    impulse(&src, remark);
+    let builder = sinc::Builder::default()
+        .sample_rate(48000, 44100)
+        .attenuation(96)
+        .quantify(128)
+        .pass_freq(20000);
+    let src = Src::new_by_builder(48000, 44100, builder);
+    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    convert("beep", &src, remark);
+    convert("sweep", &src, remark);
+    impulse(&src, remark);
 }
 
 #[test]

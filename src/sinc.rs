@@ -252,6 +252,40 @@ impl Manager {
         })
     }
 
+    fn new_internal(ratio: Rational64, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
+        if !supported_ratio(ratio) {
+            return Err(Error::UnsupportedRatio);
+        }
+        if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
+            || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
+            || !(0.01..=1.0).contains(&trans_width)
+        {
+            return Err(Error::InvalidParam);
+        }
+        let kaiser_beta = calc_kaiser_beta(atten);
+        let fratio = *ratio.numer() as f64 / *ratio.denom() as f64;
+        let order = calc_order(fratio, atten, trans_width);
+        let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
+    }
+
+    fn with_order_internal(ratio: Rational64, atten: f64, quan: u32, order: u32) -> Result<Self> {
+        if !supported_ratio(ratio) {
+            return Err(Error::UnsupportedRatio);
+        }
+        if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
+            || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
+            || !(MIN_ORDER..=MAX_ORDER).contains(&order)
+        {
+            return Err(Error::InvalidParam);
+        }
+        let fratio = *ratio.numer() as f64 / *ratio.denom() as f64;
+        let kaiser_beta = calc_kaiser_beta(atten);
+        let trans_width = calc_trans_width(fratio, atten, order);
+        let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
+    }
+
     /// Create a `Manager` with raw parameters, that means all of these should
     /// be calculated in advance.
     ///
@@ -281,20 +315,8 @@ impl Manager {
     /// - trans_width: the transition band width in `[0.01, 1.0]`
     #[inline]
     pub fn new(ratio: f64, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
-        let ratio_i64 = Rational64::approximate_float(ratio).unwrap_or_default();
-        if !supported_ratio(ratio_i64) {
-            return Err(Error::UnsupportedRatio);
-        }
-        if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
-            || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
-            || !(0.01..=1.0).contains(&trans_width)
-        {
-            return Err(Error::InvalidParam);
-        }
-        let kaiser_beta = calc_kaiser_beta(atten);
-        let order = calc_order(ratio, atten, trans_width);
-        let cutoff = ratio.min(1.0) * (1.0 - 0.5 * trans_width);
-        Self::with_raw_internal(ratio_i64, quan, order, kaiser_beta, cutoff)
+        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        Self::new_internal(ratio, atten, quan, trans_width)
     }
 
     /// Create a `Manager` with attenuation, quantify and order
@@ -307,20 +329,28 @@ impl Manager {
     /// - order: `[1, 2048]`
     #[inline]
     pub fn with_order(ratio: f64, atten: f64, quan: u32, order: u32) -> Result<Self> {
-        let ratio_i64 = Rational64::approximate_float(ratio).unwrap_or_default();
-        if !supported_ratio(ratio_i64) {
-            return Err(Error::UnsupportedRatio);
-        }
-        if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
-            || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
-            || !(MIN_ORDER..=MAX_ORDER).contains(&order)
-        {
+        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        Self::with_order_internal(ratio, atten, quan, order)
+    }
+
+    #[inline]
+    pub fn with_sample_rate(
+        old_sr: u32,
+        new_sr: u32,
+        atten: f64,
+        quan: u32,
+        pass_freq: u32,
+    ) -> Result<Self> {
+        if old_sr == 0 || new_sr == 0 {
             return Err(Error::InvalidParam);
         }
-        let kaiser_beta = calc_kaiser_beta(atten);
-        let trans_width = calc_trans_width(ratio, atten, order);
-        let cutoff = ratio.min(1.0) * (1.0 - 0.5 * trans_width);
-        Self::with_raw_internal(ratio_i64, quan, order, kaiser_beta, cutoff)
+        let ratio = Rational64::new(new_sr.into(), old_sr.into());
+        if !supported_ratio(ratio) {
+            return Err(Error::UnsupportedRatio);
+        }
+        let min_sr = new_sr.min(old_sr);
+        let trans_width = min_sr.saturating_sub(pass_freq.saturating_mul(2)) as f64 / min_sr as f64;
+        Self::new_internal(ratio, atten, quan, trans_width)
     }
 
     /// Create a `Converter` which actually implement the interpolation.
@@ -344,6 +374,118 @@ impl Manager {
     #[inline]
     pub fn order(&self) -> u32 {
         self.order
+    }
+
+    #[inline]
+    pub fn builder() -> Builder {
+        Builder::default()
+    }
+}
+
+#[derive(Default)]
+pub struct Builder {
+    ratio: Option<Rational64>,
+    order: Option<u32>,
+    quan: Option<u32>,
+    kaiser_beta: Option<f64>,
+    cutoff: Option<f64>,
+    atten: Option<f64>,
+    trans_width: Option<f64>,
+    old_sr: Option<u32>,
+    new_sr: Option<u32>,
+    pass_freq: Option<u32>,
+}
+
+impl Builder {
+    pub fn ratio(mut self, ratio: f64) -> Self {
+        self.ratio = Some(Rational64::approximate_float(ratio).unwrap_or_default());
+        self
+    }
+
+    pub fn sample_rate(mut self, old_sr: u32, new_sr: u32) -> Self {
+        self.old_sr = Some(old_sr);
+        self.new_sr = Some(new_sr);
+        self
+    }
+
+    pub fn quantify(mut self, quan: u32) -> Self {
+        self.quan = Some(quan);
+        self
+    }
+
+    pub fn order(mut self, order: u32) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    pub fn kaiser_beta<B: Into<f64>>(mut self, beta: B) -> Self {
+        self.kaiser_beta = Some(beta.into());
+        self
+    }
+
+    pub fn cutoff(mut self, cutoff: f64) -> Self {
+        self.cutoff = Some(cutoff);
+        self
+    }
+
+    pub fn attenuation<A: Into<f64>>(mut self, atten: A) -> Self {
+        self.atten = Some(atten.into());
+        self
+    }
+
+    pub fn trans_width(mut self, width: f64) -> Self {
+        self.trans_width = Some(width);
+        self
+    }
+
+    pub fn pass_width(mut self, width: f64) -> Self {
+        self.trans_width = Some(1.0 - width);
+        self
+    }
+
+    pub fn pass_freq(mut self, freq: u32) -> Self {
+        self.pass_freq = Some(freq);
+        self
+    }
+
+    pub fn build(self) -> Result<Manager> {
+        let (ratio, quan) = match (self.ratio, self.quan, self.old_sr, self.new_sr) {
+            (Some(ratio), Some(quan), _, _) => (ratio, quan),
+            (_, Some(quan), Some(old_sr), Some(new_sr)) => {
+                if old_sr == 0 || new_sr == 0 {
+                    return Err(Error::InvalidParam);
+                }
+                (Rational64::new(new_sr.into(), old_sr.into()), quan)
+            }
+            _ => return Err(Error::NotEnoughParam),
+        };
+        if !supported_ratio(ratio) {
+            return Err(Error::UnsupportedRatio);
+        }
+        match (
+            self.order,
+            self.kaiser_beta,
+            self.cutoff,
+            self.atten,
+            self.trans_width,
+            self.old_sr,
+            self.new_sr,
+            self.pass_freq,
+        ) {
+            (Some(order), Some(kaiser_beta), Some(cutoff), _, _, _, _, _) => {
+                Manager::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
+            }
+            (_, _, _, Some(atten), Some(trans_width), _, _, _) => {
+                Manager::new_internal(ratio, atten, quan, trans_width)
+            }
+            (Some(order), _, _, Some(atten), _, _, _, _) => {
+                Manager::with_order_internal(ratio, atten, quan, order)
+            }
+            (_, _, _, Some(atten), _, Some(old_sr), Some(new_sr), Some(pass_freq)) => {
+                Manager::with_sample_rate(old_sr, new_sr, atten, quan, pass_freq)
+            }
+            _ => Err(Error::NotEnoughParam),
+        }
     }
 }
 
@@ -379,5 +521,17 @@ mod tests {
         assert!(Manager::with_order(2.0, 72.0, 0, 32).is_err());
         assert!(Manager::with_order(2.0, 12.0, 32, 32).is_ok());
         assert!(Manager::with_order(2.0, 11.9, 32, 32).is_err());
+    }
+
+    #[test]
+    fn test_builder() {
+        assert!(Manager::builder().build().is_err());
+        let manager = Manager::builder()
+            .sample_rate(44100, 48000)
+            .quantify(32)
+            .attenuation(72)
+            .pass_freq(20000)
+            .build();
+        assert!(manager.is_ok());
     }
 }

@@ -9,6 +9,9 @@ repository = "https://github.com/DrPeaboss/simple_src"
 keywords = ["audio", "dsp", "sample-rate"]
 exclude = ["*.py"]
 
+[dependencies]
+num-rational = "0.4"
+
 [dev-dependencies]
 divan = "0.1.14"
 hound = "3.5.1"

@@ -1,5 +1,9 @@
 //! Linear converter
 
+use num_rational::Rational64;
+
+use crate::supported_ratio;
+
 use super::{Convert, Error, Result};
 
 enum State {
@@ -9,18 +13,28 @@ enum State {
 }
 
 pub struct Converter {
-    step: f64,
-    pos: f64,
+    numer: usize,
+    denom: usize,
+    pos: usize,
+    coefs: Vec<f64>,
     last_in: [f64; 2],
     state: State,
 }
 
 impl Converter {
     #[inline]
-    fn new(step: f64) -> Self {
+    fn new(step: Rational64) -> Self {
+        let numer = *step.numer() as usize;
+        let denom = *step.denom() as usize;
+        let mut coefs = Vec::with_capacity(denom);
+        for i in 0..denom {
+            coefs.push(i as f64 / denom as f64);
+        }
         Self {
-            step,
-            pos: 0.0,
+            numer,
+            denom,
+            pos: 0,
+            coefs,
             last_in: [0.0; 2],
             state: State::First,
         }
@@ -38,15 +52,15 @@ impl Convert for Converter {
                 State::First => {
                     if let Some(s) = iter.next() {
                         self.last_in[1] = s;
-                        self.pos = 1.0;
+                        self.pos = self.numer;
                         self.state = State::Normal;
                     } else {
                         return None;
                     }
                 }
                 State::Normal => {
-                    while self.pos >= 1.0 {
-                        self.pos -= 1.0;
+                    while self.pos >= self.denom {
+                        self.pos -= self.denom;
                         self.last_in[0] = self.last_in[1];
                         if let Some(s) = iter.next() {
                             self.last_in[1] = s;
@@ -55,8 +69,9 @@ impl Convert for Converter {
                             return None;
                         }
                     }
-                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * self.pos;
-                    self.pos += self.step;
+                    let coef = self.coefs[self.pos];
+                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
+                    self.pos += self.numer;
                     return Some(interp);
                 }
                 State::Suspend => {
@@ -72,20 +87,19 @@ impl Convert for Converter {
     }
 }
 
-use super::{MAX_RATIO, MIN_RATIO};
-
 #[derive(Clone, Copy)]
 pub struct Manager {
-    ratio: f64,
+    ratio: Rational64,
 }
 
 impl Manager {
     #[inline]
     pub fn new(ratio: f64) -> Result<Self> {
-        if (MIN_RATIO..=MAX_RATIO).contains(&ratio) {
+        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        if supported_ratio(ratio) {
             Ok(Self { ratio })
         } else {
-            Err(Error::InvalidRatio)
+            Err(Error::UnsupportedRatio)
         }
     }
 
@@ -101,7 +115,7 @@ mod tests {
 
     #[test]
     fn test_manager_ok() {
-        let ratio_ok = vec![0.01, 1.0, 10.0, 99.99, 100.0];
+        let ratio_ok = vec![0.0625, 0.063, 1.0, 15.9, 16.0];
         for ratio in ratio_ok {
             assert!(Manager::new(ratio).is_ok());
         }
@@ -112,8 +126,9 @@ mod tests {
         let ratio_err = vec![
             -1.0,
             0.0,
-            100.01,
-            1000.0,
+            0.0624,
+            16.01,
+            0.123456,
             f64::INFINITY,
             f64::NEG_INFINITY,
             f64::NAN,

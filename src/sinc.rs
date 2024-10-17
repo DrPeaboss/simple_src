@@ -133,7 +133,7 @@ impl Converter {
         let mut right;
         if taps % 2 == 1 {
             let pos = coef * self.quan;
-            let posu = coef as usize;
+            let posu = pos as usize;
             let h1 = self.filter[posu];
             let h2 = self.filter[posu + 1];
             let h = h1 + (h2 - h1) * (pos - posu as f64);

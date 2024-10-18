@@ -10,7 +10,7 @@ keywords = ["audio", "dsp", "sample-rate"]
 exclude = ["*.py"]
 
 [dependencies]
-num-rational = "0.4"
+num-rational = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 divan = "0.1.14"

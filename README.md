@@ -5,7 +5,8 @@ A simple sample rate conversion lib for audio.
 ## Usage
 
 Usually use *sinc* Converter, it is flexible and high-quality.
-The *linear* Converter is not recommended unless performance is really important.
+The *linear* Converter is not recommended unless performance is really important
+and quality is not cared.
 
 ### sinc
 
@@ -107,4 +108,4 @@ See code in [tests](/tests/) for more details.
 1. Smith, J.O. Digital Audio Resampling Home Page
     https://ccrma.stanford.edu/~jos/resample/.
 2. Alan V. Oppenheim, Ronald W. Schafer.
-    Discrete-Time Signal Processing, Thrid Edition.
+    Discrete-Time Signal Processing, Third Edition.

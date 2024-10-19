@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "simple_src"
-version = "0.3.0-preview"
+version = "0.3.0"
 dependencies = [
  "divan",
  "hound",

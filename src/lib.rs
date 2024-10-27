@@ -7,6 +7,9 @@
 pub mod linear;
 pub mod sinc;
 
+mod ratio;
+use ratio::{Ratio, Rational};
+
 pub struct ConvertIter<'a, I, C> {
     iter: I,
     cvtr: &'a mut C,
@@ -60,15 +63,6 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-use num_rational::Rational64;
-
-fn supported_ratio(ratio: Rational64) -> bool {
-    ratio > Rational64::default()
-        && *ratio.numer() <= 1024
-        && ratio.ceil().to_integer() <= 16
-        && ratio.recip().ceil().to_integer() <= 16
-}
 
 #[cfg(test)]
 mod tests {

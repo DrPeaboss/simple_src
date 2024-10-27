@@ -36,11 +36,7 @@ use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use num_rational::Rational64;
-
-use crate::supported_ratio;
-
-use super::{Convert, Error, Result};
+use super::{Convert, Error, Ratio, Rational, Result};
 
 #[inline]
 fn sinc_c(x: f64, cutoff: f64) -> f64 {
@@ -117,21 +113,107 @@ enum State {
     Suspend,
 }
 
-pub struct Converter {
-    numer: usize,
-    denom: usize,
-    pos: usize,
-    coefs: Vec<f64>,
-    half_order: f64,
-    quan: f64,
-    filter: Arc<Vec<f64>>,
-    buf: VecDeque<f64>,
+pub struct FloatConverter {
     state: State,
+    buf: VecDeque<f64>,
+    filter: Arc<Vec<f64>>,
+    quan: f64,
+    half_order: f64,
+    step: f64,
+    pos: f64,
 }
 
-impl Converter {
-    #[inline]
-    fn new(step: Rational64, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
+pub struct RationalConverter {
+    state: State,
+    buf: VecDeque<f64>,
+    filter: Arc<Vec<f64>>,
+    quan: f64,
+    half_order: f64,
+    pos: usize,
+    numer: usize,
+    denom: usize,
+    coefs: Vec<f64>,
+}
+
+pub struct RationalFastConverter {
+    state: State,
+    buf: VecDeque<f64>,
+    pos: usize,
+    numer: usize,
+    denom: usize,
+    lut: Arc<Vec<Vec<f64>>>,
+}
+
+pub enum Converter {
+    Float(FloatConverter),
+    Rational(RationalConverter),
+    RationalFast(RationalFastConverter),
+}
+
+impl FloatConverter {
+    fn new(step: f64, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
+        let taps = (order + 1) as usize;
+        let mut buf = VecDeque::with_capacity(taps);
+        buf.extend(std::iter::repeat(0.0).take(taps));
+        Self {
+            state: State::Normal,
+            buf,
+            filter,
+            quan: quan as f64,
+            half_order: 0.5 * order as f64,
+            pos: 0.0,
+            step,
+        }
+    }
+
+    fn interpolate(&self) -> f64 {
+        let coef = self.pos;
+        let mut interp = 0.0;
+        let pos_max = self.filter.len() - 1;
+        let taps = self.buf.len();
+        let iter_count = taps / 2;
+        let mut left;
+        let mut right;
+        if taps % 2 == 1 {
+            let pos = coef * self.quan;
+            let posu = pos as usize;
+            let h1 = self.filter[posu];
+            let h2 = self.filter[posu + 1];
+            let h = h1 + (h2 - h1) * (pos - posu as f64);
+            interp += self.buf[iter_count] * h;
+            left = iter_count - 1;
+            right = iter_count + 1;
+        } else {
+            left = iter_count - 1;
+            right = iter_count;
+        }
+        let coef = coef + self.half_order;
+        for _ in 0..iter_count {
+            let pos1 = (coef - left as f64).abs() * self.quan;
+            let pos2 = (coef - right as f64).abs() * self.quan;
+            let pos1u = pos1 as usize;
+            let pos2u = pos2 as usize;
+            if pos1u < pos_max {
+                let h1 = self.filter[pos1u];
+                let h2 = self.filter[pos1u + 1];
+                let h = h1 + (h2 - h1) * (pos1 - pos1u as f64);
+                interp += self.buf[left] * h;
+            }
+            if pos2u < pos_max {
+                let h1 = self.filter[pos2u];
+                let h2 = self.filter[pos2u + 1];
+                let h = h1 + (h2 - h1) * (pos2 - pos2u as f64);
+                interp += self.buf[right] * h;
+            }
+            left = left.wrapping_sub(1);
+            right = right.wrapping_add(1);
+        }
+        interp
+    }
+}
+
+impl RationalConverter {
+    fn new(step: Rational, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
         let numer = *step.numer() as usize;
         let denom = *step.denom() as usize;
         let mut coefs = Vec::with_capacity(denom);
@@ -142,19 +224,18 @@ impl Converter {
         let mut buf = VecDeque::with_capacity(taps);
         buf.extend(std::iter::repeat(0.0).take(taps));
         Self {
+            state: State::Normal,
+            buf,
+            filter,
+            quan: quan as f64,
+            half_order: 0.5 * order as f64,
+            pos: 0,
             numer,
             denom,
-            pos: 0,
             coefs,
-            half_order: 0.5 * order as f64,
-            quan: quan as f64,
-            filter,
-            buf,
-            state: State::Normal,
         }
     }
 
-    #[inline]
     fn interpolate(&self) -> f64 {
         let coef = self.coefs[self.pos];
         let mut interp = 0.0;
@@ -201,8 +282,67 @@ impl Converter {
     }
 }
 
-impl Convert for Converter {
-    #[inline]
+impl RationalFastConverter {
+    fn new(step: Rational, order: u32, lut: Arc<Vec<Vec<f64>>>) -> Self {
+        let taps = (order + 1) as usize;
+        let mut buf = VecDeque::with_capacity(taps);
+        buf.extend(std::iter::repeat(0.0).take(taps));
+        Self {
+            state: State::Normal,
+            buf,
+            pos: 0,
+            numer: *step.numer() as usize,
+            denom: *step.denom() as usize,
+            lut,
+        }
+    }
+
+    fn interpolate(&self) -> f64 {
+        self.lut[self.pos]
+            .iter()
+            .zip(self.buf.iter())
+            .map(|(h, s)| h * s)
+            .sum()
+    }
+}
+
+impl Convert for FloatConverter {
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
+    where
+        I: Iterator<Item = f64>,
+    {
+        loop {
+            match self.state {
+                State::Normal => {
+                    while self.pos >= 1.0 {
+                        self.pos -= 1.0;
+                        if let Some(s) = iter.next() {
+                            self.buf.pop_front();
+                            self.buf.push_back(s);
+                        } else {
+                            self.state = State::Suspend;
+                            return None;
+                        }
+                    }
+                    let interp = self.interpolate();
+                    self.pos += self.step;
+                    return Some(interp);
+                }
+                State::Suspend => {
+                    if let Some(s) = iter.next() {
+                        self.buf.pop_front();
+                        self.buf.push_back(s);
+                        self.state = State::Normal;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Convert for RationalConverter {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
         I: Iterator<Item = f64>,
@@ -238,6 +378,59 @@ impl Convert for Converter {
     }
 }
 
+impl Convert for RationalFastConverter {
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
+    where
+        I: Iterator<Item = f64>,
+        Self: Sized,
+    {
+        loop {
+            match self.state {
+                State::Normal => {
+                    while self.pos >= self.denom {
+                        self.pos -= self.denom;
+                        if let Some(s) = iter.next() {
+                            self.buf.pop_front();
+                            self.buf.push_back(s);
+                        } else {
+                            self.state = State::Suspend;
+                            return None;
+                        }
+                    }
+                    let interp = self.interpolate();
+                    self.pos += self.numer;
+                    return Some(interp);
+                }
+                State::Suspend => {
+                    if let Some(s) = iter.next() {
+                        self.buf.pop_front();
+                        self.buf.push_back(s);
+                        self.state = State::Normal;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Convert for Converter {
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
+    where
+        I: Iterator<Item = f64>,
+        Self: Sized,
+    {
+        match self {
+            Converter::Float(float_converter) => float_converter.next_sample(iter),
+            Converter::Rational(rational_converter) => rational_converter.next_sample(iter),
+            Converter::RationalFast(rational_fast_converter) => {
+                rational_fast_converter.next_sample(iter)
+            }
+        }
+    }
+}
+
 const MIN_ORDER: u32 = 1;
 const MAX_ORDER: u32 = 2048;
 const MIN_QUAN: u32 = 1;
@@ -246,25 +439,28 @@ const MIN_ATTEN: f64 = 12.0;
 const MAX_ATTEN: f64 = 180.0;
 
 #[derive(Clone)]
+enum Lut {
+    Generic(Arc<Vec<f64>>),
+    Fast(Arc<Vec<Vec<f64>>>),
+}
+
+#[derive(Clone)]
 pub struct Manager {
-    ratio: Rational64,
+    ratio: Ratio,
     order: u32,
     quan: u32,
     latency: usize,
-    filter: Arc<Vec<f64>>,
+    lut: Lut,
 }
 
 impl Manager {
     fn with_raw_internal(
-        ratio: Rational64,
+        ratio: Ratio,
         quan: u32,
         order: u32,
         kaiser_beta: f64,
         cutoff: f64,
     ) -> Result<Self> {
-        if !supported_ratio(ratio) {
-            return Err(Error::UnsupportedRatio);
-        }
         if !(MIN_QUAN..=MAX_QUAN).contains(&quan)
             || !(MIN_ORDER..=MAX_ORDER).contains(&order)
             || !(0.0..=20.0).contains(&kaiser_beta)
@@ -273,21 +469,18 @@ impl Manager {
             return Err(Error::InvalidParam);
         }
         let filter = generate_filter_table(quan, order, kaiser_beta, cutoff);
-        let fratio = *ratio.numer() as f64 / *ratio.denom() as f64;
+        let fratio = ratio.to_float();
         let latency = (fratio * order as f64 * 0.5).round() as usize;
         Ok(Self {
             ratio,
             order,
             quan,
             latency,
-            filter: Arc::new(filter),
+            lut: Lut::Generic(Arc::new(filter)),
         })
     }
 
-    fn new_internal(ratio: Rational64, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
-        if !supported_ratio(ratio) {
-            return Err(Error::UnsupportedRatio);
-        }
+    fn new_internal(ratio: Ratio, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
         if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
             || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
             || !(0.01..=1.0).contains(&trans_width)
@@ -295,23 +488,20 @@ impl Manager {
             return Err(Error::InvalidParam);
         }
         let kaiser_beta = calc_kaiser_beta(atten);
-        let fratio = *ratio.numer() as f64 / *ratio.denom() as f64;
+        let fratio = ratio.to_float();
         let order = calc_order(fratio, atten, trans_width);
         let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
-    fn with_order_internal(ratio: Rational64, atten: f64, quan: u32, order: u32) -> Result<Self> {
-        if !supported_ratio(ratio) {
-            return Err(Error::UnsupportedRatio);
-        }
+    fn with_order_internal(ratio: Ratio, atten: f64, quan: u32, order: u32) -> Result<Self> {
         if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
             || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
             || !(MIN_ORDER..=MAX_ORDER).contains(&order)
         {
             return Err(Error::InvalidParam);
         }
-        let fratio = *ratio.numer() as f64 / *ratio.denom() as f64;
+        let fratio = ratio.to_float();
         let kaiser_beta = calc_kaiser_beta(atten);
         let trans_width = calc_trans_width(fratio, atten, order);
         let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
@@ -334,7 +524,7 @@ impl Manager {
         kaiser_beta: f64,
         cutoff: f64,
     ) -> Result<Self> {
-        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        let ratio = Ratio::try_from_float(ratio)?;
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
@@ -349,7 +539,7 @@ impl Manager {
     /// - trans_width: the transition band width in `[0.01, 1.0]`
     #[inline]
     pub fn new(ratio: f64, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
-        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        let ratio = Ratio::try_from_float(ratio)?;
         Self::new_internal(ratio, atten, quan, trans_width)
     }
 
@@ -363,7 +553,7 @@ impl Manager {
     /// - order: `[1, 2048]`
     #[inline]
     pub fn with_order(ratio: f64, atten: f64, quan: u32, order: u32) -> Result<Self> {
-        let ratio = Rational64::approximate_float(ratio).unwrap_or_default();
+        let ratio = Ratio::try_from_float(ratio)?;
         Self::with_order_internal(ratio, atten, quan, order)
     }
 
@@ -385,13 +575,7 @@ impl Manager {
         quan: u32,
         pass_freq: u32,
     ) -> Result<Self> {
-        if old_sr == 0 || new_sr == 0 {
-            return Err(Error::InvalidParam);
-        }
-        let ratio = Rational64::new(new_sr.into(), old_sr.into());
-        if !supported_ratio(ratio) {
-            return Err(Error::UnsupportedRatio);
-        }
+        let ratio = Ratio::try_from_integers(new_sr, old_sr)?;
         let min_sr = new_sr.min(old_sr);
         let trans_width = min_sr.saturating_sub(pass_freq.saturating_mul(2)) as f64 / min_sr as f64;
         Self::new_internal(ratio, atten, quan, trans_width)
@@ -400,12 +584,27 @@ impl Manager {
     /// Create a `Converter` which actually implement the interpolation.
     #[inline]
     pub fn converter(&self) -> Converter {
-        Converter::new(
-            self.ratio.recip(),
-            self.order,
-            self.quan,
-            self.filter.clone(),
-        )
+        // RationalConverter::new(
+        //     self.ratio.recip(),
+        //     self.order,
+        //     self.quan,
+        //     self.filter.clone(),
+        // )
+        match (&self.ratio, &self.lut) {
+            (Ratio::Float(ratio), Lut::Generic(filter)) => Converter::Float(FloatConverter::new(
+                ratio.recip(),
+                self.order,
+                self.quan,
+                filter.clone(),
+            )),
+            (Ratio::Rational(ratio), Lut::Generic(filter)) => Converter::Rational(
+                RationalConverter::new(ratio.recip(), self.order, self.quan, filter.clone()),
+            ),
+            (Ratio::Rational(ratio), Lut::Fast(lut)) => Converter::RationalFast(
+                RationalFastConverter::new(ratio.recip(), self.order, lut.clone()),
+            ),
+            _ => unreachable!(),
+        }
     }
 
     /// Get the latency of the FIR filter.
@@ -442,7 +641,7 @@ impl Manager {
 /// ```
 #[derive(Default)]
 pub struct Builder {
-    ratio: Option<Rational64>,
+    ratio: Option<Ratio>,
     order: Option<u32>,
     quan: Option<u32>,
     kaiser_beta: Option<f64>,
@@ -457,7 +656,7 @@ pub struct Builder {
 impl Builder {
     /// Set `ratio`, in `[1/16, 16]`, the numerator after reduction should <= 1024
     pub fn ratio(mut self, ratio: f64) -> Self {
-        self.ratio = Some(Rational64::approximate_float(ratio).unwrap_or_default());
+        self.ratio = Some(Ratio::try_from_float(ratio).unwrap_or_default());
         self
     }
 
@@ -542,16 +741,10 @@ impl Builder {
         let (ratio, quan) = match (self.ratio, self.quan, self.old_sr, self.new_sr) {
             (Some(ratio), Some(quan), _, _) => (ratio, quan),
             (_, Some(quan), Some(old_sr), Some(new_sr)) => {
-                if old_sr == 0 || new_sr == 0 {
-                    return Err(Error::InvalidParam);
-                }
-                (Rational64::new(new_sr.into(), old_sr.into()), quan)
+                (Ratio::try_from_integers(new_sr, old_sr)?, quan)
             }
             _ => return Err(Error::NotEnoughParam),
         };
-        if !supported_ratio(ratio) {
-            return Err(Error::UnsupportedRatio);
-        }
         match (
             self.order,
             self.kaiser_beta,

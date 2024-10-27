@@ -88,6 +88,30 @@ fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f64) -> Vec<f
 }
 
 #[inline]
+fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) -> Vec<Vec<f64>> {
+    let mut lut = Vec::with_capacity(len);
+    let i0_beta = bessel_i0(beta);
+    let half_order = order as f64 * 0.5;
+    let taps = order + 1;
+    for i in 0..len {
+        let pos = i as f64 / len as f64;
+        let mut coef_pos = Vec::with_capacity(taps as usize);
+        for j in (0..taps).rev() {
+            let pos = pos + j as f64 - half_order;
+            let coef = if (-half_order..=half_order).contains(&pos) {
+                let i0_1 = bessel_i0(beta * (1.0 - (pos / half_order).powi(2)).sqrt());
+                sinc_c(pos, cutoff) * (i0_1 / i0_beta)
+            } else {
+                0.0
+            };
+            coef_pos.push(coef);
+        }
+        lut.push(coef_pos);
+    }
+    lut
+}
+
+#[inline]
 fn calc_kaiser_beta(atten: f64) -> f64 {
     if atten > 50.0 {
         0.1102 * (atten - 8.7)
@@ -480,6 +504,31 @@ impl Manager {
         })
     }
 
+    fn with_raw_fast_internal(
+        ratio: Rational,
+        order: u32,
+        kaiser_beta: f64,
+        cutoff: f64,
+    ) -> Result<Self> {
+        if !(MIN_ORDER..=MAX_ORDER).contains(&order)
+            || !(0.0..=20.0).contains(&kaiser_beta)
+            || !(0.01..=1.0).contains(&cutoff)
+        {
+            return Err(Error::InvalidParam);
+        }
+        let lut = generate_fast_lut(*ratio.numer() as usize, order, kaiser_beta, cutoff);
+        let ratio = Ratio::Rational(ratio);
+        let fratio = ratio.to_float();
+        let latency = (fratio * order as f64 * 0.5).round() as usize;
+        Ok(Self {
+            ratio,
+            order,
+            quan: 0,
+            latency,
+            lut: Lut::Fast(Arc::new(lut)),
+        })
+    }
+
     fn new_internal(ratio: Ratio, atten: f64, quan: u32, trans_width: f64) -> Result<Self> {
         if !(MIN_ATTEN..=MAX_ATTEN).contains(&atten)
             || !(MIN_QUAN..=MAX_QUAN).contains(&quan)
@@ -491,6 +540,11 @@ impl Manager {
         let fratio = ratio.to_float();
         let order = calc_order(fratio, atten, trans_width);
         let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        if let Ratio::Rational(ratio) = ratio {
+            if *ratio.numer() <= 1024 {
+                return Self::with_raw_fast_internal(ratio, order, kaiser_beta, cutoff);
+            }
+        }
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
@@ -505,6 +559,11 @@ impl Manager {
         let kaiser_beta = calc_kaiser_beta(atten);
         let trans_width = calc_trans_width(fratio, atten, order);
         let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        if let Ratio::Rational(ratio) = ratio {
+            if *ratio.numer() <= 1024 {
+                return Self::with_raw_fast_internal(ratio, order, kaiser_beta, cutoff);
+            }
+        }
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
@@ -525,6 +584,11 @@ impl Manager {
         cutoff: f64,
     ) -> Result<Self> {
         let ratio = Ratio::try_from_float(ratio)?;
+        if let Ratio::Rational(ratio) = ratio {
+            if *ratio.numer() <= 1024 {
+                return Self::with_raw_fast_internal(ratio, order, kaiser_beta, cutoff);
+            }
+        }
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
@@ -779,7 +843,7 @@ mod tests {
     #[test]
     fn test_manager_with_raw() {
         assert!(Manager::with_raw(2.0, 32, 32, 5.0, 0.8).is_ok());
-        assert!(Manager::with_raw(2.0, 0, 32, 5.0, 0.8).is_err());
+        assert!(Manager::with_raw(2.0, 0, 32, 5.0, 0.8).is_ok());
         assert!(Manager::with_raw(2.0, 32, 0, 5.0, 0.8).is_err());
         assert!(Manager::with_raw(2.0, 32, 32, 5.0, 0.0).is_err());
         assert!(Manager::with_raw(2.0, 32, 32, 5.0, 1.1).is_err());

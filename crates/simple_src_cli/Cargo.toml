@@ -1,0 +1,11 @@
+[package]
+name = "simple_src_cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.54", features = ["derive"] }
+hound = "3.5.1"
+simple_src = { path = "../simple_src" }

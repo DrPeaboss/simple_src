@@ -1,0 +1,20 @@
+[package]
+name = "simple_src"
+version = "0.3.0"
+edition = "2021"
+authors = ["PeaZomboss <PeaZomboss@outlook.com>"]
+license = "MIT"
+description = "A simple sample rate conversion lib for audio."
+repository = "https://github.com/DrPeaboss/simple_src"
+keywords = ["audio", "dsp", "sample-rate"]
+
+[dependencies]
+num-rational = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+divan = "0.1.14"
+hound = "3.5.1"
+
+[[bench]]
+name = "bench1"
+harness = false

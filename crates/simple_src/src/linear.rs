@@ -11,7 +11,7 @@
 //! }
 //! ```
 
-use super::{Convert, Ratio, Rational, Result};
+use super::{Convert, ConvertMode, Ratio, Rational, Result, convert_with, output_len};
 
 enum State {
     First,
@@ -19,14 +19,14 @@ enum State {
     Suspend,
 }
 
-pub struct FloatConverter {
+pub(crate) struct FloatConverter {
     state: State,
     last_in: [f64; 2],
     step: f64,
     pos: f64,
 }
 
-pub struct RationalConverter {
+pub(crate) struct RationalConverter {
     state: State,
     last_in: [f64; 2],
     numer: usize,
@@ -35,7 +35,7 @@ pub struct RationalConverter {
     recip: f64,
 }
 
-pub struct RationalFastConverter {
+pub(crate) struct RationalFastConverter {
     state: State,
     last_in: [f64; 2],
     numer: usize,
@@ -44,10 +44,15 @@ pub struct RationalFastConverter {
     coef: Vec<f64>,
 }
 
-pub enum Converter {
+enum ConverterKind {
     Float(FloatConverter),
     Rational(RationalConverter),
     RationalFast(RationalFastConverter),
+}
+
+/// Opaque sample-rate converter created by [`Manager::converter`].
+pub struct Converter {
+    inner: ConverterKind,
 }
 
 impl FloatConverter {
@@ -70,13 +75,10 @@ impl Convert for FloatConverter {
         loop {
             match self.state {
                 State::First => {
-                    if let Some(s) = iter.next() {
-                        self.last_in[1] = s;
-                        self.pos = 1.0;
-                        self.state = State::Normal;
-                    } else {
-                        return None;
-                    }
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.pos = 1.0;
+                    self.state = State::Normal;
                 }
                 State::Normal => {
                     while self.pos >= 1.0 {
@@ -95,12 +97,9 @@ impl Convert for FloatConverter {
                     return Some(interp);
                 }
                 State::Suspend => {
-                    if let Some(s) = iter.next() {
-                        self.last_in[1] = s;
-                        self.state = State::Normal;
-                    } else {
-                        return None;
-                    }
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.state = State::Normal;
                 }
             }
         }
@@ -130,13 +129,10 @@ impl Convert for RationalConverter {
         loop {
             match self.state {
                 State::First => {
-                    if let Some(s) = iter.next() {
-                        self.last_in[1] = s;
-                        self.pos = self.numer;
-                        self.state = State::Normal;
-                    } else {
-                        return None;
-                    }
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.pos = self.numer;
+                    self.state = State::Normal;
                 }
                 State::Normal => {
                     while self.pos >= self.denom {
@@ -155,12 +151,9 @@ impl Convert for RationalConverter {
                     return Some(interp);
                 }
                 State::Suspend => {
-                    if let Some(s) = iter.next() {
-                        self.last_in[1] = s;
-                        self.state = State::Normal;
-                    } else {
-                        return None;
-                    }
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.state = State::Normal;
                 }
             }
         }
@@ -191,13 +184,10 @@ impl Convert for RationalFastConverter {
         loop {
             match self.state {
                 State::First => {
-                    if let Some(s) = iter.next() {
-                        self.last_in[1] = s;
-                        self.pos = self.numer;
-                        self.state = State::Normal;
-                    } else {
-                        return None;
-                    }
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.pos = self.numer;
+                    self.state = State::Normal;
                 }
                 State::Normal => {
                     while self.pos >= self.denom {
@@ -216,12 +206,9 @@ impl Convert for RationalFastConverter {
                     return Some(interp);
                 }
                 State::Suspend => {
-                    if let Some(s) = iter.next() {
-                        self.last_in[1] = s;
-                        self.state = State::Normal;
-                    } else {
-                        return None;
-                    }
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.state = State::Normal;
                 }
             }
         }
@@ -230,16 +217,17 @@ impl Convert for RationalFastConverter {
 
 impl Converter {
     fn new(ratio: Ratio) -> Self {
-        match ratio {
-            Ratio::Float(ratio) => Self::Float(FloatConverter::new(ratio.recip())),
+        let inner = match ratio {
+            Ratio::Float(ratio) => ConverterKind::Float(FloatConverter::new(ratio.recip())),
             Ratio::Rational(ratio) => {
                 if *ratio.numer() <= 16384 {
-                    Self::RationalFast(RationalFastConverter::new(ratio.recip()))
+                    ConverterKind::RationalFast(RationalFastConverter::new(ratio.recip()))
                 } else {
-                    Self::Rational(RationalConverter::new(ratio.recip()))
+                    ConverterKind::Rational(RationalConverter::new(ratio.recip()))
                 }
             }
-        }
+        };
+        Self { inner }
     }
 }
 
@@ -250,10 +238,10 @@ impl Convert for Converter {
         I: Iterator<Item = f64>,
         Self: Sized,
     {
-        match self {
-            Converter::Float(converter) => converter.next_sample(iter),
-            Converter::Rational(converter) => converter.next_sample(iter),
-            Converter::RationalFast(converter) => converter.next_sample(iter),
+        match &mut self.inner {
+            ConverterKind::Float(converter) => converter.next_sample(iter),
+            ConverterKind::Rational(converter) => converter.next_sample(iter),
+            ConverterKind::RationalFast(converter) => converter.next_sample(iter),
         }
     }
 }
@@ -271,8 +259,44 @@ impl Manager {
     }
 
     #[inline]
+    pub fn with_sample_rate(old_sr: u32, new_sr: u32) -> Result<Self> {
+        let ratio = Ratio::try_from_integers(new_sr, old_sr)?;
+        Ok(Self { ratio })
+    }
+
+    #[inline]
     pub fn converter(&self) -> Converter {
         Converter::new(self.ratio)
+    }
+
+    #[inline]
+    pub fn ratio(&self) -> f64 {
+        self.ratio.as_float()
+    }
+
+    #[inline]
+    pub fn ratio_parts(&self) -> Option<(i64, i64)> {
+        self.ratio.parts()
+    }
+
+    #[inline]
+    pub fn mode(&self) -> ConvertMode {
+        self.ratio.linear_mode()
+    }
+
+    #[inline]
+    pub fn latency(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    pub fn output_len(&self, input_len: usize) -> usize {
+        output_len(self.ratio(), input_len)
+    }
+
+    /// Convert a complete buffer, padding the end with zeros.
+    pub fn convert(&self, input: &[f64]) -> Vec<f64> {
+        convert_with(self.converter(), self.latency(), self.ratio(), input)
     }
 }
 
@@ -302,5 +326,16 @@ mod tests {
         for ratio in ratio_err {
             assert!(Manager::new(ratio).is_err());
         }
+    }
+
+    #[test]
+    fn test_mode_and_sample_rate() {
+        let m = Manager::with_sample_rate(44100, 48000).unwrap();
+        assert_eq!(m.mode(), ConvertMode::RationalFast);
+        assert_eq!(m.ratio_parts(), Some((160, 147)));
+        let two = Manager::new(2.0).unwrap();
+        assert_eq!(two.mode(), ConvertMode::RationalFast);
+        let generic = Manager::with_sample_rate(19999, 20000).unwrap();
+        assert_eq!(generic.mode(), ConvertMode::Rational);
     }
 }

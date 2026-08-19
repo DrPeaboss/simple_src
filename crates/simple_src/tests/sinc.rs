@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use simple_src::{sinc, Convert};
+use simple_src::{Convert, sinc};
 
 struct Src {
     sr_old: u32,
@@ -112,7 +112,7 @@ fn impulse_raw(src: &Src, remark: &str) {
         .skip(src.manager.latency())
         .take(src.sr_new as usize)
         .for_each(|s| {
-            file.write(&s.to_ne_bytes()).unwrap();
+            file.write_all(&s.to_ne_bytes()).unwrap();
         });
     file.flush().unwrap();
 }

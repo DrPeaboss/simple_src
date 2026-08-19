@@ -1,8 +1,11 @@
-use super::{Error, Result};
+use super::{ConvertMode, Error, Result};
 
 pub type Rational = num_rational::Rational64;
 
-#[derive(Clone, Copy)]
+const LINEAR_FAST_NUMER_MAX: i64 = 16384;
+const SINC_FAST_NUMER_MAX: i64 = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ratio {
     Float(f64),
     Rational(Rational),
@@ -11,7 +14,7 @@ pub enum Ratio {
 impl Ratio {
     pub fn is_supported(&self) -> bool {
         match self {
-            Ratio::Float(ratio) => ((1.0 / 16.0)..=16.0).contains(ratio),
+            Ratio::Float(ratio) => ratio.is_finite() && ((1.0 / 16.0)..=16.0).contains(ratio),
             Ratio::Rational(ratio) => {
                 *ratio > Rational::default()
                     && ratio.ceil().to_integer() <= 16
@@ -29,7 +32,7 @@ impl Ratio {
                 Ok(Self::Float(float_ratio))
             }
         } else {
-            Err(Error::UnsupportedRatio)
+            Err(Error::unsupported(float_ratio))
         }
     }
 
@@ -37,13 +40,13 @@ impl Ratio {
         let numer = numer.into();
         let denom = denom.into();
         if numer == 0 || denom == 0 {
-            return Err(Error::InvalidParam);
+            return Err(Error::invalid("sample_rate", 0.0, 1.0, i32::MAX as f64));
         }
         let ratio = Rational::new(numer, denom);
         if Self::is_supported(&Self::Rational(ratio)) {
             Ok(Self::Rational(ratio))
         } else {
-            Err(Error::UnsupportedRatio)
+            Err(Error::unsupported(numer as f64 / denom as f64))
         }
     }
 
@@ -51,6 +54,29 @@ impl Ratio {
         match self {
             Ratio::Float(f) => *f,
             Ratio::Rational(r) => *r.numer() as f64 / *r.denom() as f64,
+        }
+    }
+
+    pub fn parts(&self) -> Option<(i64, i64)> {
+        match self {
+            Ratio::Float(_) => None,
+            Ratio::Rational(r) => Some((*r.numer(), *r.denom())),
+        }
+    }
+
+    pub fn linear_mode(&self) -> ConvertMode {
+        match self {
+            Ratio::Float(_) => ConvertMode::Float,
+            Ratio::Rational(r) if *r.numer() <= LINEAR_FAST_NUMER_MAX => ConvertMode::RationalFast,
+            Ratio::Rational(_) => ConvertMode::Rational,
+        }
+    }
+
+    pub fn require_fast(&self) -> Result<Rational> {
+        match self {
+            Ratio::Rational(r) if *r.numer() <= SINC_FAST_NUMER_MAX => Ok(*r),
+            Ratio::Rational(r) => Err(Error::fast_unavailable(self.as_float(), Some(*r.numer()))),
+            Ratio::Float(f) => Err(Error::fast_unavailable(*f, None)),
         }
     }
 }

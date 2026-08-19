@@ -2,13 +2,37 @@
 //!
 //! ## Usage
 //!
-//! See [sinc] or [linear]
+//! See [sinc] or [linear].
+//!
+//! Sinc converters have FIR latency. Prefer [`sinc::Manager::convert`] for
+//! complete buffers; for streaming, skip [`sinc::Manager::latency`] samples
+//! at the start and call [`Convert::flush`] after the last input.
+//!
+//! Multi-channel audio is N independent mono converters that must stay
+//! frame-aligned. Process planar buffers (one contiguous slice per channel).
+//! [`process_planar`] / [`flush_planar`] keep consume/produce counts in lockstep
+//! and return [`Error`] if channel counts or buffer lengths do not match.
 
 pub mod linear;
 pub mod sinc;
 
+mod quality;
 mod ratio;
+
+pub use quality::Quality;
 use ratio::{Ratio, Rational};
+
+/// Interpolation implementation selected from the conversion ratio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvertMode {
+    /// Floating-point phase increment. Used when the ratio cannot be reduced
+    /// to a supported rational.
+    Float,
+    /// Integer phase, coefficients computed or interpolated at run time.
+    Rational,
+    /// Integer phase with a fully precomputed coefficient table.
+    RationalFast,
+}
 
 pub struct ConvertIter<'a, I, C> {
     iter: I,
@@ -53,14 +77,288 @@ pub trait Convert {
     {
         ConvertIter::new(iter, self)
     }
+
+    /// Convert as many samples as fit in `output`, consuming from `input`.
+    ///
+    /// Returns `(consumed, produced)`.
+    fn process_block(&mut self, input: &[f64], output: &mut [f64]) -> (usize, usize)
+    where
+        Self: Sized,
+    {
+        let mut iter = SliceIter {
+            data: input,
+            pos: 0,
+        };
+        let mut produced = 0;
+        while produced < output.len() {
+            match self.next_sample(&mut iter) {
+                Some(sample) => {
+                    output[produced] = sample;
+                    produced += 1;
+                }
+                None => break,
+            }
+        }
+        (iter.pos, produced)
+    }
+
+    /// Continue converting by feeding zeros, writing into `output`.
+    ///
+    /// Call this after the last input block to drain FIR delay. Returns the
+    /// number of samples written, which is `output.len()` unless the converter
+    /// has not yet seen any input.
+    fn flush(&mut self, output: &mut [f64]) -> usize
+    where
+        Self: Sized,
+    {
+        let mut zeros = std::iter::repeat(0.0);
+        let mut produced = 0;
+        while produced < output.len() {
+            match self.next_sample(&mut zeros) {
+                Some(sample) => {
+                    output[produced] = sample;
+                    produced += 1;
+                }
+                None => break,
+            }
+        }
+        produced
+    }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    UnsupportedRatio,
-    InvalidParam,
-    NotEnoughParam,
+struct SliceIter<'a> {
+    data: &'a [f64],
+    pos: usize,
 }
+
+impl Iterator for SliceIter<'_> {
+    type Item = f64;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let sample = *self.data.get(self.pos)?;
+        self.pos += 1;
+        Some(sample)
+    }
+}
+
+/// Process planar channel buffers in lockstep.
+///
+/// Each converter is independent (no stereo mixing). The returned
+/// `(consumed, produced)` applies to every channel.
+///
+/// The caller must still pass matching layouts: one buffer per converter, and
+/// the same input/output length on every channel. Mismatches return
+/// [`Error::MismatchedChannels`] or [`Error::MismatchedLength`] instead of
+/// panicking. Converters should come from the same manager and stay in
+/// lockstep; if they have drifted, this returns [`Error::UnalignedConverters`]
+/// after some channels may already have advanced.
+pub fn process_planar<C: Convert>(
+    converters: &mut [C],
+    inputs: &[&[f64]],
+    outputs: &mut [&mut [f64]],
+) -> Result<(usize, usize)> {
+    check_channel_count(converters.len(), inputs.len(), "input")?;
+    check_channel_count(converters.len(), outputs.len(), "output")?;
+    check_equal_channel_lens(inputs.iter().map(|s| s.len()), "input")?;
+    check_equal_channel_lens(outputs.iter().map(|s| s.len()), "output")?;
+    let mut consumed = 0;
+    let mut produced = 0;
+    for (i, converter) in converters.iter_mut().enumerate() {
+        let (c, p) = converter.process_block(inputs[i], outputs[i]);
+        if i == 0 {
+            consumed = c;
+            produced = p;
+        } else if c != consumed || p != produced {
+            return Err(Error::UnalignedConverters { channel: i });
+        }
+    }
+    Ok((consumed, produced))
+}
+
+/// Flush planar converters in lockstep. See [`Convert::flush`].
+///
+/// The caller must pass one output buffer per converter, all of equal length.
+/// See [`process_planar`] for the error cases.
+pub fn flush_planar<C: Convert>(converters: &mut [C], outputs: &mut [&mut [f64]]) -> Result<usize> {
+    check_channel_count(converters.len(), outputs.len(), "output")?;
+    check_equal_channel_lens(outputs.iter().map(|s| s.len()), "output")?;
+    let mut produced = 0;
+    for (i, converter) in converters.iter_mut().enumerate() {
+        let p = converter.flush(outputs[i]);
+        if i == 0 {
+            produced = p;
+        } else if p != produced {
+            return Err(Error::UnalignedConverters { channel: i });
+        }
+    }
+    Ok(produced)
+}
+
+fn check_channel_count(expected: usize, actual: usize, what: &'static str) -> Result<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::MismatchedChannels {
+            expected,
+            actual,
+            what,
+        })
+    }
+}
+
+fn check_equal_channel_lens(
+    mut lens: impl Iterator<Item = usize>,
+    what: &'static str,
+) -> Result<()> {
+    let Some(expected) = lens.next() else {
+        return Ok(());
+    };
+    for (i, actual) in lens.enumerate() {
+        if actual != expected {
+            return Err(Error::MismatchedLength {
+                channel: i + 1,
+                expected,
+                actual,
+                what,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn convert_with<C: Convert>(
+    mut converter: C,
+    latency: usize,
+    ratio: f64,
+    input: &[f64],
+) -> Vec<f64> {
+    let out_len = output_len(ratio, input.len());
+    converter
+        .process(input.iter().copied().chain(std::iter::repeat(0.0)))
+        .skip(latency)
+        .take(out_len)
+        .collect()
+}
+
+fn output_len(ratio: f64, input_len: usize) -> usize {
+    (ratio * input_len as f64).round() as usize
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    UnsupportedRatio {
+        ratio: f64,
+    },
+    InvalidParam {
+        name: &'static str,
+        value: f64,
+        min: f64,
+        max: f64,
+    },
+    MissingParam(&'static str),
+    MismatchedChannels {
+        expected: usize,
+        actual: usize,
+        what: &'static str,
+    },
+    MismatchedLength {
+        channel: usize,
+        expected: usize,
+        actual: usize,
+        what: &'static str,
+    },
+    UnalignedConverters {
+        channel: usize,
+    },
+    FastUnavailable {
+        ratio: f64,
+        numer: Option<i64>,
+    },
+}
+
+impl Error {
+    pub(crate) fn unsupported(ratio: f64) -> Self {
+        Self::UnsupportedRatio { ratio }
+    }
+
+    pub(crate) fn invalid(name: &'static str, value: f64, min: f64, max: f64) -> Self {
+        Self::InvalidParam {
+            name,
+            value,
+            min,
+            max,
+        }
+    }
+
+    pub(crate) fn missing(name: &'static str) -> Self {
+        Self::MissingParam(name)
+    }
+
+    pub(crate) fn fast_unavailable(ratio: f64, numer: Option<i64>) -> Self {
+        Self::FastUnavailable { ratio, numer }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedRatio { ratio } => {
+                write!(f, "unsupported conversion ratio {ratio}")
+            }
+            Self::InvalidParam {
+                name,
+                value,
+                min,
+                max,
+            } => write!(
+                f,
+                "invalid parameter {name}={value}, expected [{min}, {max}]"
+            ),
+            Self::MissingParam(name) => {
+                write!(
+                    f,
+                    "not enough parameters to build converter, missing {name}"
+                )
+            }
+            Self::MismatchedChannels {
+                expected,
+                actual,
+                what,
+            } => write!(
+                f,
+                "planar {what} count is {actual}, expected {expected} converters"
+            ),
+            Self::MismatchedLength {
+                channel,
+                expected,
+                actual,
+                what,
+            } => write!(
+                f,
+                "planar {what} length mismatch: channel 0 has {expected}, channel {channel} has {actual}"
+            ),
+            Self::UnalignedConverters { channel } => {
+                write!(
+                    f,
+                    "planar converters are not in lockstep at channel {channel}"
+                )
+            }
+            Self::FastUnavailable { ratio, numer } => match numer {
+                Some(numer) => write!(
+                    f,
+                    "fast polyphase converter is unavailable for ratio {ratio} (numerator {numer} > 1024); use new/with_quality for generic interpolation"
+                ),
+                None => write!(
+                    f,
+                    "fast polyphase converter is unavailable for ratio {ratio}; use new/with_quality for generic interpolation"
+                ),
+            },
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -68,58 +366,113 @@ pub type Result<T> = std::result::Result<T, Error>;
 mod tests {
     use super::*;
 
-    #[allow(dead_code)]
-    struct DynTest;
-
-    impl DynTest {
-        #[allow(dead_code)]
-        pub fn new(a: i32) -> Box<dyn Convert> {
-            if a == 0 {
-                let manager = linear::Manager::new(2.0).unwrap();
-                Box::new(manager.converter())
-            } else {
-                let manager = sinc::Manager::new(2.0, 48.0, 8, 0.2).unwrap();
-                Box::new(manager.converter())
+    #[test]
+    fn error_display() {
+        let err = Error::invalid("quantify", 0.0, 1.0, 16384.0);
+        let text = err.to_string();
+        assert!(text.contains("quantify"));
+        assert!(text.contains("0"));
+        let fast = Error::fast_unavailable(std::f64::consts::PI, None);
+        let text = fast.to_string();
+        assert!(text.contains("generic"));
+        assert!(matches!(
+            Error::fast_unavailable(1025.0 / 1024.0, Some(1025)),
+            Error::FastUnavailable {
+                numer: Some(1025),
+                ..
             }
-        }
+        ));
     }
 
     #[test]
-    #[ignore = "display only"]
-    fn test1() {
-        let samples = vec![1.0, 2.0, 3.0, 4.0];
+    fn process_block_and_flush_linear() {
         let manager = linear::Manager::new(2.0).unwrap();
-        let mut cvtr = manager.converter();
-        for s in cvtr.process(samples.into_iter()) {
-            println!("sample = {s}");
+        let mut cv = manager.converter();
+        let input = [1.0, 2.0, 3.0, 4.0];
+        let mut output = [0.0; 8];
+        let (consumed, produced) = cv.process_block(&input, &mut output);
+        assert_eq!(consumed, 4);
+        assert!(produced <= 8);
+        let extra = cv.flush(&mut output[produced..]);
+        assert_eq!(produced + extra, 8);
+    }
+
+    #[test]
+    fn convert_matches_process_skip() {
+        let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
+        let input = [1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
+        let via_helper = manager.convert(&input);
+        let mut cv = manager.converter();
+        let via_iter: Vec<_> = cv
+            .process(input.iter().copied().chain(std::iter::repeat(0.0)))
+            .skip(manager.latency())
+            .take(manager.output_len(input.len()))
+            .collect();
+        assert_eq!(via_helper.len(), via_iter.len());
+        for (a, b) in via_helper.iter().zip(via_iter.iter()) {
+            assert!((a - b).abs() < 1e-12);
         }
     }
 
     #[test]
-    #[ignore = "display only"]
-    fn test2() {
-        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let manager = sinc::Manager::with_raw(2.0, 16, 4, 5.0, 1.0).unwrap();
-        for s in manager
-            .converter()
-            .process(samples.into_iter())
-            .skip(manager.latency())
-        {
-            println!("sample = {s}");
-        }
+    fn planar_lockstep() {
+        let manager = linear::Manager::new(2.0).unwrap();
+        let mut converters = [manager.converter(), manager.converter()];
+        let left = [1.0, 2.0, 3.0, 4.0];
+        let right = [4.0, 3.0, 2.0, 1.0];
+        let mut out_l = [0.0; 8];
+        let mut out_r = [0.0; 8];
+        let inputs: [&[f64]; 2] = [&left, &right];
+        let mut outputs: [&mut [f64]; 2] = [&mut out_l, &mut out_r];
+        let (consumed, produced) = process_planar(&mut converters, &inputs, &mut outputs).unwrap();
+        assert_eq!(consumed, 4);
+        assert!(produced > 0);
+        let mut tail_l = [0.0; 4];
+        let mut tail_r = [0.0; 4];
+        let mut tails: [&mut [f64]; 2] = [&mut tail_l, &mut tail_r];
+        let flushed = flush_planar(&mut converters, &mut tails).unwrap();
+        assert_eq!(flushed, 4);
     }
 
     #[test]
-    #[ignore = "display only"]
-    fn test3() {
-        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let manager = sinc::Manager::with_order(2.0, 30.0, 16, 4).unwrap();
-        for s in manager
-            .converter()
-            .process(samples.into_iter())
-            .skip(manager.latency())
-        {
-            println!("sample = {s}");
-        }
+    fn process_planar_rejects_channel_count_mismatch() {
+        let manager = linear::Manager::new(2.0).unwrap();
+        let mut converters = [manager.converter(), manager.converter()];
+        let left = [1.0, 2.0];
+        let mut out_l = [0.0; 4];
+        let mut out_r = [0.0; 4];
+        let inputs: [&[f64]; 1] = [&left];
+        let mut outputs: [&mut [f64]; 2] = [&mut out_l, &mut out_r];
+        let err = process_planar(&mut converters, &inputs, &mut outputs).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::MismatchedChannels {
+                expected: 2,
+                actual: 1,
+                what: "input"
+            }
+        ));
+    }
+
+    #[test]
+    fn process_planar_rejects_unequal_input_lens() {
+        let manager = linear::Manager::new(2.0).unwrap();
+        let mut converters = [manager.converter(), manager.converter()];
+        let left = [1.0, 2.0, 3.0, 4.0];
+        let right = [4.0, 3.0];
+        let mut out_l = [0.0; 8];
+        let mut out_r = [0.0; 8];
+        let inputs: [&[f64]; 2] = [&left, &right];
+        let mut outputs: [&mut [f64]; 2] = [&mut out_l, &mut out_r];
+        let err = process_planar(&mut converters, &inputs, &mut outputs).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::MismatchedLength {
+                channel: 1,
+                expected: 4,
+                actual: 2,
+                what: "input"
+            }
+        ));
     }
 }

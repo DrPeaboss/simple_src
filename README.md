@@ -8,17 +8,49 @@ Usually use *sinc* Converter, it is flexible and high-quality.
 The *linear* Converter is not recommended unless performance is really important
 and quality is not cared.
 
+Sinc converters have FIR latency. For a complete buffer, call
+`Manager::convert`, which pads zeros and drops the leading delay.
+For streaming, skip `manager.latency()` samples at the start and call
+`Convert::flush` after the last input.
+
+Multi-channel audio is N independent mono converters. Keep planar buffers
+(one slice per channel) and use a converter per channel, or
+`process_planar` to keep consume/produce counts aligned. Pass the same
+converter count, buffer lengths, and process history on every channel;
+mismatches return `Error` instead of panicking.
+
 ### sinc
 
-With new method:
+Generic interpolation uses a half Kaiser-sinc table and `quantify`. Fast
+polyphase interpolation precomputes one tap set per rational phase; it
+requires a rational ratio whose reduced numerator is ≤ 1024, does not take
+`quantify`, and returns `Error::FastUnavailable` otherwise.
+
+Typical 44100/48000 conversion:
 
 ```rust
-use simple_src::{sinc, Convert};
+use simple_src::{sinc, Quality};
 
 let samples = vec![1.0, 2.0, 3.0, 4.0];
-let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
-let mut converter = manager.converter();
-for s in converter.process(samples.into_iter()) {
+let manager = sinc::Manager::fast_with_sample_rate_quality(
+    44100,
+    48000,
+    Quality::Bit16Fast,
+    20000,
+).unwrap();
+for s in manager.convert(&samples) {
+    println!("{s}");
+}
+```
+
+Generic path with a quality preset (`quantify` is used):
+
+```rust
+use simple_src::{sinc, Quality};
+
+let samples = vec![1.0, 2.0, 3.0, 4.0];
+let manager = sinc::Manager::with_quality(2.0, Quality::Bit8Fast, 0.1).unwrap();
+for s in manager.convert(&samples) {
     println!("{s}");
 }
 ```
@@ -42,7 +74,7 @@ for s in converter.process(samples.into_iter()) {
 }
 ```
 
-For multi-channel example see [two_channels.rs](/examples/two_channels.rs).
+For multi-channel example see [two_channels.rs](/crates/simple_src/examples/two_channels.rs).
 
 ### linear
 
@@ -59,27 +91,40 @@ for s in converter.process(samples.into_iter()) {
 
 ## Sinc parameters
 
-Recommended initialization parameters for *sinc* converter:
+Recommended initialization parameters for *sinc* converter, also available as
+[`Quality`](https://docs.rs/simple_src) presets:
 
-|              | attenuation | quantify |
-| ------------ | ----------- | -------- |
-| 8bit fast    | 48          | 8        |
-| 8bit medium  | 60          | 16       |
-| 8bit better  | 72          | 32       |
-| 16bit lower  | 84          | 64       |
-| 16bit fast   | 96          | 128      |
-| 16bit medium | 108         | 256      |
-| 16bit better | 120         | 512      |
-| 24bit lower  | 132         | 1024     |
-| 24bit fast   | 144         | 2048     |
-| 24bit medium | 156         | 4096     |
-| 24bit better | 168         | 8192     |
+|              | attenuation | quantify | `Quality`        |
+| ------------ | ----------- | -------- | ---------------- |
+| 8bit fast    | 48          | 8        | `Bit8Fast`       |
+| 8bit medium  | 60          | 16       | `Bit8Medium`     |
+| 8bit better  | 72          | 32       | `Bit8Better`     |
+| 16bit lower  | 84          | 64       | `Bit16Lower`     |
+| 16bit fast   | 96          | 128      | `Bit16Fast`      |
+| 16bit medium | 108         | 256      | `Bit16Medium`    |
+| 16bit better | 120         | 512      | `Bit16Better`    |
+| 24bit lower  | 132         | 1024     | `Bit24Lower`     |
+| 24bit fast   | 144         | 2048     | `Bit24Fast`      |
+| 24bit medium | 156         | 4096     | `Bit24Medium`    |
+| 24bit better | 168         | 8192     | `Bit24Better`    |
 
 The relationship between *attenuation* and *quantify* is about
 *Q = 2 ^ (A / 12 - 1)*, *A = 12 + 12 * log2(Q)*.
 
 Due to the amount of calculation and the size of LUT, A = 144 or 156 for 24bit
 audio is usually fine, and for 16bit, A = 120 is enough.
+
+`Quality::attenuation` applies to Generic and Fast; `Quality::quantify` is
+Generic-only.
+
+## CLI
+
+```
+cargo run -p simple_src_cli -- input.wav -r 48000 -o output.wav
+```
+
+The CLI uses Fast polyphase interpolation by default. Pass `--generic` (and
+`--quantify` if needed) for half-table interpolation.
 
 ## Plots
 
@@ -89,8 +134,8 @@ and *matplotlib*.
 Here is an example showing the results of a downsampling 96kHz:
 
 ```
-$ cargo test -r --test testwav -- --ignored --exact --show-output generate
-$ cargo test -r --test sinc -- --ignored --exact --show-output ta120_2_96k_down
+$ cargo test -p simple_src -r --test testwav -- --ignored --exact --show-output generate
+$ cargo test -p simple_src -r --test sinc -- --ignored --exact --show-output ta120_2_96k_down
 $ python
 >>> import plots
 >>> import os
@@ -101,7 +146,7 @@ $ python
 >>> plots.impulse('impulse_96k_44k_s_a120_2.wav', True)
 ```
 
-See code in [tests](/tests/) for more details.
+See code in [tests](/crates/simple_src/tests/) for more details.
 
 ## References
 

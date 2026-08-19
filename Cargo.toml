@@ -1,6 +1,9 @@
 [workspace]
 members = ["crates/simple_src", "crates/simple_src_cli"]
-resolver = "2"
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
 
 [profile.perf]
 inherits = "release"

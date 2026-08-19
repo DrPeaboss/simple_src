@@ -1,4 +1,4 @@
-use simple_src::{linear, sinc, Convert};
+use simple_src::{Convert, linear, sinc};
 
 fn main() {
     divan::main();
@@ -13,16 +13,17 @@ enum Conv {
     C96k48k,
 }
 
-impl ToString for Conv {
-    fn to_string(&self) -> String {
-        match self {
-            Conv::C44k48k => "44k to 48k".into(),
-            Conv::C44k96k => "44k to 96k".into(),
-            Conv::C48k44k => "48k to 44k".into(),
-            Conv::C48k96k => "48k to 96k".into(),
-            Conv::C96k44k => "96k to 44k".into(),
-            Conv::C96k48k => "96k to 48k".into(),
-        }
+impl std::fmt::Display for Conv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Conv::C44k48k => "44k to 48k",
+            Conv::C44k96k => "44k to 96k",
+            Conv::C48k44k => "48k to 44k",
+            Conv::C48k96k => "48k to 96k",
+            Conv::C96k44k => "96k to 44k",
+            Conv::C96k48k => "96k to 48k",
+        };
+        f.write_str(label)
     }
 }
 
@@ -72,7 +73,7 @@ fn linear_1s(bencher: divan::Bencher, conv: &Conv) {
     let manager = linear::Manager::new(conv.ratio()).unwrap();
     let sample_num = conv.sample_num_10ms() * 100;
     bencher.bench_local(move || {
-        let iter = (0..).map(|x| x as f64).into_iter();
+        let iter = (0..).map(|x| x as f64);
         for s in manager.converter().process(iter).take(sample_num) {
             divan::black_box(s);
         }
@@ -96,7 +97,7 @@ fn proc_a96_10ms(bencher: divan::Bencher, conv: &Conv) {
     let manager = init_a96(conv);
     let sample_num = conv.sample_num_10ms();
     bencher.bench_local(move || {
-        let iter = (0..).map(|x| x as f64).into_iter();
+        let iter = (0..).map(|x| x as f64);
         for s in manager.converter().process(iter).take(sample_num) {
             divan::black_box(s);
         }
@@ -120,7 +121,7 @@ fn proc_a120_10ms(bencher: divan::Bencher, conv: &Conv) {
     let manager = init_a120(conv);
     let sample_num = conv.sample_num_10ms();
     bencher.bench_local(move || {
-        let iter = (0..).map(|x| x as f64).into_iter();
+        let iter = (0..).map(|x| x as f64);
         for s in manager.converter().process(iter).take(sample_num) {
             divan::black_box(s);
         }
@@ -144,7 +145,7 @@ fn proc_a144_10ms(bencher: divan::Bencher, conv: &Conv) {
     let manager = init_a144(conv);
     let sample_num = conv.sample_num_10ms();
     bencher.bench_local(move || {
-        let iter = (0..).map(|x| x as f64).into_iter();
+        let iter = (0..).map(|x| x as f64);
         for s in manager.converter().process(iter).take(sample_num) {
             divan::black_box(s);
         }

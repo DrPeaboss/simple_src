@@ -1,7 +1,7 @@
 [package]
 name = "simple_src"
-version = "0.3.0"
-edition = "2021"
+version = "0.4.0"
+edition.workspace = true
 authors = ["PeaZomboss <PeaZomboss@outlook.com>"]
 license = "MIT"
 description = "A simple sample rate conversion lib for audio."
@@ -12,8 +12,8 @@ keywords = ["audio", "dsp", "sample-rate"]
 num-rational = { version = "0.4", default-features = false }
 
 [dev-dependencies]
-divan = "0.1.14"
-hound = "3.5.1"
+divan = "0.1"
+hound = "3.5"
 
 [[bench]]
 name = "bench1"

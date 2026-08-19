@@ -1,4 +1,4 @@
-use simple_src::{linear::Manager, Convert};
+use simple_src::{Convert, linear::Manager};
 
 fn convert(file_prefix: &str, sr_old: u32, sr_new: u32) {
     let ratio = sr_new as f64 / sr_old as f64;

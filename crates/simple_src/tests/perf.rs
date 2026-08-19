@@ -1,6 +1,6 @@
 use std::hint::black_box;
 
-use simple_src::{sinc, Convert};
+use simple_src::{Convert, sinc};
 
 #[test]
 #[ignore = "perf only"]
@@ -10,7 +10,7 @@ fn t4448() {
     let manager = sinc::Manager::new(48000.0 / 44100.0, 150.0, 2048, 2050.0 / 22050.0).unwrap();
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
-    let iter = (0..).map(|x| x as f64).into_iter();
+    let iter = (0..).map(|x| x as f64);
     for s in manager.converter().process(iter).take(48000) {
         black_box(s);
     }
@@ -25,7 +25,7 @@ fn t4844() {
     let manager = sinc::Manager::new(44100.0 / 48000.0, 150.0, 2048, 2050.0 / 22050.0).unwrap();
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
-    let iter = (0..).map(|x| x as f64).into_iter();
+    let iter = (0..).map(|x| x as f64);
     for s in manager.converter().process(iter).take(44100) {
         black_box(s);
     }
@@ -40,7 +40,7 @@ fn t9644() {
     let manager = sinc::Manager::new(44100.0 / 96000.0, 150.0, 2048, 2050.0 / 22050.0).unwrap();
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
-    let iter = (0..).map(|x| x as f64).into_iter();
+    let iter = (0..).map(|x| x as f64);
     for s in manager.converter().process(iter).take(44100) {
         black_box(s);
     }
@@ -55,7 +55,7 @@ fn t9648() {
     let manager = sinc::Manager::new(48000.0 / 96000.0, 150.0, 2048, 4000.0 / 24000.0).unwrap();
     println!("{:?}", now.elapsed());
     let now = std::time::Instant::now();
-    let iter = (0..).map(|x| x as f64).into_iter();
+    let iter = (0..).map(|x| x as f64);
     for s in manager.converter().process(iter).take(48000) {
         black_box(s);
     }

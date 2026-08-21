@@ -30,7 +30,7 @@ fn sinc_dc_gain() {
     let start = manager.latency().max(32);
     let body = &output[start..output.len() - 32];
     let avg = mean(body);
-    assert!((avg - 1.0).abs() < 0.05, "dc gain {avg}");
+    assert!((avg - 1.0).abs() < 1e-3, "dc gain {avg}");
 }
 
 #[test]

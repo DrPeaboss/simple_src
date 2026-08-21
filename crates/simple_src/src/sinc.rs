@@ -17,6 +17,10 @@
 //! half-table interpolation. For a polyphase LUT, call `fast` /
 //! `fast_with_quality` / `fast_with_sample_rate` (or builder `.fast()`).
 //!
+//! Designed filters place the transition entirely below the applicable Nyquist
+//! (`cutoff = min(1, ratio) * (1 - trans_width)`), size the FIR with a +6 dB
+//! attenuation margin (even order), and normalize coefficients for unity DC.
+//!
 //! ## Builder way
 //!
 //! ```
@@ -82,6 +86,10 @@ fn generic_table_len(quan: u32, order: u32) -> usize {
     last_real + 2
 }
 
+/// Extra dB when sizing the FIR from attenuation + transition width so the
+/// realized stopband more closely meets the requested `atten`.
+const ORDER_ATTEN_MARGIN_DB: f64 = 6.0;
+
 #[inline]
 fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f64) -> Vec<f64> {
     let i0_beta = bessel_i0(beta);
@@ -94,6 +102,19 @@ fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f64) -> Vec<f
         filter.push(windowed_sinc(pos, half_order, beta, i0_beta, cutoff));
     }
     filter.push(0.0);
+    // Scale so the integer-delay (frac=0) impulse response has DC gain 1.
+    let taps = (order + 1) as usize;
+    let mut dc = 0.0;
+    for j in 0..taps {
+        let pos = j as f64 - half_order;
+        dc += windowed_sinc(pos, half_order, beta, i0_beta, cutoff);
+    }
+    if dc.abs() > 1e-18 {
+        let inv = 1.0 / dc;
+        for c in &mut filter {
+            *c *= inv;
+        }
+    }
     filter
 }
 
@@ -109,6 +130,13 @@ fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) -> Vec<Vec<
         for j in (0..taps).rev() {
             let pos = pos + j as f64 - half_order;
             coef_pos.push(windowed_sinc(pos, half_order, beta, i0_beta, cutoff));
+        }
+        let dc: f64 = coef_pos.iter().sum();
+        if dc.abs() > 1e-18 {
+            let inv = 1.0 / dc;
+            for c in &mut coef_pos {
+                *c *= inv;
+            }
         }
         lut.push(coef_pos);
     }
@@ -128,12 +156,37 @@ fn calc_kaiser_beta(atten: f64) -> f64 {
 
 #[inline]
 fn calc_trans_width(ratio: f64, atten: f64, order: u32) -> f64 {
+    // Inverse of the Kaiser length formula for the *requested* attenuation
+    // (no design margin). Used when the caller fixes `order`.
     (atten - 8.0) / (2.285 * order as f64 * PI * ratio.min(1.0))
 }
 
 #[inline]
 fn calc_order(ratio: f64, atten: f64, trans_width: f64) -> u32 {
-    f64::ceil((atten - 8.0) / (2.285 * trans_width * PI * ratio.min(1.0))) as u32
+    let design_atten = atten + ORDER_ATTEN_MARGIN_DB;
+    let mut order =
+        f64::ceil((design_atten - 8.0) / (2.285 * trans_width * PI * ratio.min(1.0))) as u32;
+    if order < MIN_ORDER {
+        order = MIN_ORDER;
+    }
+    // Prefer even order for a cleaner linear-phase response at Nyquist.
+    if order % 2 == 1 {
+        order += 1;
+    }
+    order.min(MAX_ORDER)
+}
+
+/// Ideal lowpass cutoff relative to the input sample rate.
+///
+/// `nyquist` is `min(fs_new, fs_old) / fs_old`. The transition of width
+/// `trans_width * nyquist` is placed entirely below that Nyquist: the −6 dB
+/// point sits at the pass-band edge `nyquist * (1 - trans_width)`, and the
+/// stop-band edge is near `nyquist * (1 - 0.5 * trans_width)`.
+#[inline]
+fn design_cutoff(ratio: f64, trans_width: f64) -> f64 {
+    let nyquist = ratio.min(1.0);
+    // Keep within the same range enforced by with_raw / with_raw_fast.
+    (nyquist * (1.0 - trans_width)).clamp(0.01, 1.0)
 }
 
 enum State {
@@ -583,7 +636,7 @@ impl Manager {
         let kaiser_beta = calc_kaiser_beta(atten);
         let fratio = ratio.as_float();
         let order = calc_order(fratio, atten, trans_width);
-        let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        let cutoff = design_cutoff(fratio, trans_width);
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
@@ -594,7 +647,7 @@ impl Manager {
         let fratio = ratio.as_float();
         let kaiser_beta = calc_kaiser_beta(atten);
         let trans_width = calc_trans_width(fratio, atten, order);
-        let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        let cutoff = design_cutoff(fratio, trans_width);
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
@@ -605,7 +658,7 @@ impl Manager {
         let kaiser_beta = calc_kaiser_beta(atten);
         let fratio = ratio.as_float();
         let order = calc_order(fratio, atten, trans_width);
-        let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        let cutoff = design_cutoff(fratio, trans_width);
         Self::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
     }
 
@@ -616,7 +669,7 @@ impl Manager {
         let fratio = ratio.as_float();
         let kaiser_beta = calc_kaiser_beta(atten);
         let trans_width = calc_trans_width(fratio, atten, order);
-        let cutoff = fratio.min(1.0) * (1.0 - 0.5 * trans_width);
+        let cutoff = design_cutoff(fratio, trans_width);
         Self::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
     }
 
@@ -649,6 +702,12 @@ impl Manager {
     /// That means the order will be calculated. Always uses half-table
     /// interpolation; `quantify` is required. For a polyphase LUT, use
     /// [`fast`](Self::fast).
+    ///
+    /// Filter length uses the requested stop-band attenuation plus a small
+    /// design margin and is rounded up to an even order. The ideal cutoff is
+    /// placed at `min(1, ratio) * (1 - trans_width)` so the transition lies
+    /// entirely below the applicable Nyquist (stricter anti-alias / anti-image
+    /// than centering the −6 dB point on the band edge).
     ///
     /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`.
     ///   Float values may be reduced to a rational under the rules on
@@ -1297,5 +1356,57 @@ mod tests {
         assert!(n > 0);
         assert!(n < 4096, "flush should not fill a huge buffer, got {n}");
         assert_eq!(cv.flush(&mut [0.0; 64]), 0);
+    }
+
+    #[test]
+    fn calc_order_adds_margin_and_is_even() {
+        let without_margin =
+            f64::ceil((96.0 - 8.0) / (2.285 * 0.1 * PI * 1.0)) as u32;
+        let with_margin = calc_order(1.0, 96.0, 0.1);
+        assert!(with_margin > without_margin);
+        assert_eq!(with_margin % 2, 0);
+        assert!(with_margin <= MAX_ORDER);
+        // Explicit order path is unchanged by the margin helper.
+        assert_eq!(
+            calc_trans_width(1.0, 96.0, without_margin),
+            (96.0 - 8.0) / (2.285 * without_margin as f64 * PI)
+        );
+    }
+
+    #[test]
+    fn design_cutoff_puts_transition_below_nyquist() {
+        let ratio = 44100.0 / 48000.0;
+        let tw = 0.1;
+        let c = design_cutoff(ratio, tw);
+        let nyq = ratio.min(1.0);
+        assert!((c - nyq * (1.0 - tw)).abs() < 1e-15);
+        // Stop edge of a Kaiser band centered on cutoff is below Nyquist.
+        let stop = c + 0.5 * tw * nyq;
+        assert!(stop < nyq + 1e-15);
+    }
+
+    #[test]
+    fn normalized_dc_gain_is_near_unity() {
+        for (ratio, quality, tw) in [
+            (2.0, Quality::Bit8Fast, 0.2),
+            (0.5, Quality::Bit8Fast, 0.2),
+            (2.0, Quality::Bit16Fast, 0.1),
+            (48000.0 / 44100.0, Quality::Bit16Fast, 0.1),
+        ] {
+            let generic = Manager::with_quality(ratio, quality, tw).unwrap();
+            let fast = Manager::fast_with_quality(ratio, quality, tw).unwrap();
+            assert_eq!(generic.order() % 2, 0);
+            assert_eq!(fast.order() % 2, 0);
+            for (label, m) in [("generic", generic), ("fast", fast)] {
+                let out = m.convert(&vec![1.0; 512]);
+                let start = m.latency().max(32);
+                let end = out.len().saturating_sub(32).max(start + 1);
+                let avg = out[start..end].iter().sum::<f64>() / (end - start) as f64;
+                assert!(
+                    (avg - 1.0).abs() < 1e-3,
+                    "{label} ratio={ratio} quality={quality:?} dc={avg}"
+                );
+            }
+        }
     }
 }

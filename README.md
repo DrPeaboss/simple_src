@@ -126,6 +126,22 @@ audio is usually fine, and for 16bit, A = 120 is enough.
 `Quality::attenuation` applies to Generic and Fast; `Quality::quantify` is
 Generic-only.
 
+### Filter design notes
+
+- **Order:** From attenuation and transition width, length uses *A + 6 dB*
+  and is rounded up to an even order (capped at 2048). Explicit `order` /
+  `with_raw` paths skip that margin.
+- **Cutoff:** Ideal lowpass cutoff is at
+  `min(1, ratio) * (1 - trans_width)`, so the transition sits entirely below
+  the applicable Nyquist (output Nyquist when downsampling, input Nyquist when
+  upsampling). The −6 dB point is therefore near the pass edge from
+  `pass_freq` / `pass_width`; frequencies between that edge and Nyquist are
+  already in the transition or stop band. Stop-band attenuation *A* applies
+  beyond the stop edge (about halfway from the pass edge to Nyquist), not
+  inside the transition.
+- **Coefficients:** Fast phases and the Generic half-table are scaled for
+  unity DC gain.
+
 ## CLI
 
 ```

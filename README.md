@@ -11,7 +11,16 @@ and quality is not cared.
 Sinc converters have FIR latency. For a complete buffer, call
 `Manager::convert`, which pads zeros and drops the leading delay.
 For streaming, skip `manager.latency()` samples at the start and call
-`Convert::flush` after the last input.
+`Convert::flush` after the last input until it returns 0. Built-in
+sinc/linear converters stop once the delay line is empty (they may still
+need more than one call if the flush buffer is short). The trait default
+of `Convert::flush` only fills the provided buffer and does not stop on
+an empty delay.
+
+Float ratios such as `48000.0 / 44100.0` may be reduced to a rational when
+a continued-fraction fit has numerator and denominator ≤ 16384 and relative
+error ≤ `1e-12` (so `0.7` becomes `7/10`, while `π` stays float phase).
+Prefer `with_sample_rate` / `fast_with_sample_rate` for exact rate pairs.
 
 Multi-channel audio is N independent mono converters. Keep planar buffers
 (one slice per channel) and use a converter per channel, or

@@ -6,7 +6,15 @@
 //!
 //! Sinc converters have FIR latency. Prefer [`sinc::Manager::convert`] for
 //! complete buffers; for streaming, skip [`sinc::Manager::latency`] samples
-//! at the start and call [`Convert::flush`] after the last input.
+//! at the start and call [`Convert::flush`] after the last input until it
+//! returns 0. Built-in [`sinc`] / [`linear`] converters stop writing once the
+//! delay line is empty; the trait default of [`Convert::flush`] does not.
+//!
+//! Float ratios passed to constructors may be reduced to a rational when a
+//! continued-fraction approximation has numerator and denominator ≤ 16384
+//! and relative error ≤ `1e-12`; otherwise the converter uses a floating-point
+//! phase ([`ConvertMode::Float`]). Prefer [`sinc::Manager::with_sample_rate`]
+//! (or integers) when you need an exact rate pair such as 44100/48000.
 //!
 //! Multi-channel audio is N independent mono converters that must stay
 //! frame-aligned. Process planar buffers (one contiguous slice per channel).
@@ -23,10 +31,14 @@ pub use quality::Quality;
 use ratio::{Ratio, Rational};
 
 /// Interpolation implementation selected from the conversion ratio.
+///
+/// For float inputs, a rational mode is chosen only when a continued-fraction
+/// approximation has both terms ≤ 16384 and relative error ≤ `1e-12`. Exact
+/// integer sample-rate pairs always keep their reduced rational.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConvertMode {
-    /// Floating-point phase increment. Used when the ratio cannot be reduced
-    /// to a supported rational.
+    /// Floating-point phase increment. Used when no bounded rational
+    /// approximation meets the error limit (for example `π`).
     Float,
     /// Integer phase, coefficients computed or interpolated at run time.
     Rational,
@@ -104,9 +116,20 @@ pub trait Convert {
 
     /// Continue converting by feeding zeros, writing into `output`.
     ///
-    /// Call this after the last input block to drain FIR delay. Returns the
-    /// number of samples written, which is `output.len()` unless the converter
-    /// has not yet seen any input.
+    /// Call this after the last input block to drain FIR delay (or the last
+    /// linear interval). Returns the number of samples written.
+    ///
+    /// A single call may not finish draining if `output` fills first. Keep
+    /// calling until the return value is 0 (and provide a fresh buffer each
+    /// time). A converter that has not yet seen any input writes nothing.
+    ///
+    /// **Default implementation:** fills `output` by repeatedly calling
+    /// [`Self::next_sample`] with zeros until the slice is full or
+    /// `next_sample` returns `None`. It does **not** detect an empty delay
+    /// line, so custom `Convert` types that rely on this default will keep
+    /// writing for the whole buffer. Built-in [`sinc::Converter`] and
+    /// [`linear::Converter`] override `flush` to stop once their delay line
+    /// is empty (still call until 0 if the buffer was too small).
     fn flush(&mut self, output: &mut [f64]) -> usize
     where
         Self: Sized,
@@ -179,7 +202,9 @@ pub fn process_planar<C: Convert>(
 /// Flush planar converters in lockstep. See [`Convert::flush`].
 ///
 /// The caller must pass one output buffer per converter, all of equal length.
-/// See [`process_planar`] for the error cases.
+/// Like [`Convert::flush`], call again until the returned count is 0 if the
+/// buffers may be shorter than the remaining delay. See [`process_planar`]
+/// for the error cases.
 pub fn flush_planar<C: Convert>(converters: &mut [C], outputs: &mut [&mut [f64]]) -> Result<usize> {
     check_channel_count(converters.len(), outputs.len(), "output")?;
     check_equal_channel_lens(outputs.iter().map(|s| s.len()), "output")?;
@@ -394,7 +419,12 @@ mod tests {
         assert_eq!(consumed, 4);
         assert!(produced <= 8);
         let extra = cv.flush(&mut output[produced..]);
-        assert_eq!(produced + extra, 8);
+        assert!(extra <= 8 - produced);
+        assert!(produced + extra >= 6);
+        let mut rest = [0.0; 16];
+        let n = cv.flush(&mut rest);
+        assert!(n < rest.len());
+        assert_eq!(cv.flush(&mut rest), 0);
     }
 
     #[test]
@@ -431,7 +461,9 @@ mod tests {
         let mut tail_r = [0.0; 4];
         let mut tails: [&mut [f64]; 2] = [&mut tail_l, &mut tail_r];
         let flushed = flush_planar(&mut converters, &mut tails).unwrap();
-        assert_eq!(flushed, 4);
+        assert!(flushed > 0);
+        assert!(flushed <= 4);
+        assert_eq!(flush_planar(&mut converters, &mut tails).unwrap(), 0);
     }
 
     #[test]

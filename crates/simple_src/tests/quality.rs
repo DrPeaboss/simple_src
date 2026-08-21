@@ -117,3 +117,41 @@ fn process_block_roundtrip_length() {
     let skipped: Vec<_> = collected.into_iter().skip(manager.latency()).collect();
     assert!(skipped.len() >= manager.output_len(input.len()));
 }
+
+#[test]
+fn float_ratio_pi_does_not_use_rational() {
+    let manager = sinc::Manager::with_quality(PI, Quality::Bit8Fast, 0.2).unwrap();
+    assert_eq!(manager.mode(), ConvertMode::Float);
+    assert_eq!(manager.ratio_parts(), None);
+}
+
+#[test]
+fn flush_then_convert_length_still_matches() {
+    let manager = sinc::Manager::with_quality(2.0, Quality::Bit8Better, 0.1).unwrap();
+    let input: Vec<f64> = (0..64).map(|i| (i as f64 * 0.1).sin()).collect();
+    let via_convert = manager.convert(&input);
+    let mut cv = manager.converter();
+    let mut collected = Vec::new();
+    let mut pos = 0;
+    let mut tmp = [0.0; 16];
+    while pos < input.len() {
+        let (c, p) = cv.process_block(&input[pos..], &mut tmp);
+        if c == 0 && p == 0 {
+            break;
+        }
+        pos += c;
+        collected.extend_from_slice(&tmp[..p]);
+    }
+    let mut tail = [0.0; 4096];
+    let n = cv.flush(&mut tail);
+    collected.extend_from_slice(&tail[..n]);
+    assert!(n < tail.len());
+    assert_eq!(cv.flush(&mut tail), 0);
+    let skipped: Vec<_> = collected.into_iter().skip(manager.latency()).collect();
+    assert!(
+        skipped.len() + 2 >= via_convert.len(),
+        "stream {} convert {}",
+        skipped.len(),
+        via_convert.len()
+    );
+}

@@ -216,6 +216,20 @@ impl Convert for RationalFastConverter {
 }
 
 impl Converter {
+    fn delay_empty(&self) -> bool {
+        match &self.inner {
+            ConverterKind::Float(c) => {
+                matches!(c.state, State::First) || (c.last_in[0] == 0.0 && c.last_in[1] == 0.0)
+            }
+            ConverterKind::Rational(c) => {
+                matches!(c.state, State::First) || (c.last_in[0] == 0.0 && c.last_in[1] == 0.0)
+            }
+            ConverterKind::RationalFast(c) => {
+                matches!(c.state, State::First) || (c.last_in[0] == 0.0 && c.last_in[1] == 0.0)
+            }
+        }
+    }
+
     fn new(ratio: Ratio) -> Self {
         let inner = match ratio {
             Ratio::Float(ratio) => ConverterKind::Float(FloatConverter::new(ratio.recip())),
@@ -243,6 +257,32 @@ impl Convert for Converter {
             ConverterKind::Rational(converter) => converter.next_sample(iter),
             ConverterKind::RationalFast(converter) => converter.next_sample(iter),
         }
+    }
+
+    fn flush(&mut self, output: &mut [f64]) -> usize
+    where
+        Self: Sized,
+    {
+        // Overrides Convert::flush: stop when the two-sample delay is empty.
+        // Still call until 0 if `output` fills first.
+        if self.delay_empty() {
+            return 0;
+        }
+        let mut zeros = std::iter::repeat(0.0);
+        let mut produced = 0;
+        while produced < output.len() {
+            match self.next_sample(&mut zeros) {
+                Some(sample) => {
+                    output[produced] = sample;
+                    produced += 1;
+                    if self.delay_empty() {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        produced
     }
 }
 
@@ -274,11 +314,15 @@ impl Manager {
         self.ratio.as_float()
     }
 
+    /// Reduced integer ratio when a bounded float approximation (or integer
+    /// sample rates) selected a rational; `None` for float phase. See
+    /// [`ConvertMode`].
     #[inline]
     pub fn ratio_parts(&self) -> Option<(i64, i64)> {
         self.ratio.parts()
     }
 
+    /// Which interpolation path this manager will construct. See [`ConvertMode`].
     #[inline]
     pub fn mode(&self) -> ConvertMode {
         self.ratio.linear_mode()
@@ -337,5 +381,8 @@ mod tests {
         assert_eq!(two.mode(), ConvertMode::RationalFast);
         let generic = Manager::with_sample_rate(19999, 20000).unwrap();
         assert_eq!(generic.mode(), ConvertMode::Rational);
+        let pi = Manager::new(std::f64::consts::PI).unwrap();
+        assert_eq!(pi.mode(), ConvertMode::Float);
+        assert_eq!(pi.ratio_parts(), None);
     }
 }

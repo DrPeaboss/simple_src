@@ -68,16 +68,30 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 #[inline]
+fn windowed_sinc(pos: f64, half_order: f64, beta: f64, i0_beta: f64, cutoff: f64) -> f64 {
+    let ax = pos.abs();
+    if ax > half_order {
+        return 0.0;
+    }
+    let t = (1.0 - (ax / half_order).powi(2)).max(0.0).sqrt();
+    sinc_c(pos, cutoff) * (bessel_i0(beta * t) / i0_beta)
+}
+
+fn generic_table_len(quan: u32, order: u32) -> usize {
+    let last_real = (order as f64 * 0.5 * quan as f64).floor() as usize;
+    last_real + 2
+}
+
+#[inline]
 fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f64) -> Vec<f64> {
-    let len = order * quan / 2;
     let i0_beta = bessel_i0(beta);
     let half_order = order as f64 * 0.5;
-    let mut filter = Vec::with_capacity(len as usize + 1);
-    for i in 0..len {
+    let last_real = (half_order * quan as f64).floor() as usize;
+    debug_assert_eq!(last_real + 2, generic_table_len(quan, order));
+    let mut filter = Vec::with_capacity(generic_table_len(quan, order));
+    for i in 0..=last_real {
         let pos = i as f64 / quan as f64;
-        let i0_1 = bessel_i0(beta * (1.0 - (pos / half_order).powi(2)).sqrt());
-        let coef = sinc_c(pos, cutoff) * (i0_1 / i0_beta);
-        filter.push(coef);
+        filter.push(windowed_sinc(pos, half_order, beta, i0_beta, cutoff));
     }
     filter.push(0.0);
     filter
@@ -94,13 +108,7 @@ fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) -> Vec<Vec<
         let mut coef_pos = Vec::with_capacity(taps as usize);
         for j in (0..taps).rev() {
             let pos = pos + j as f64 - half_order;
-            let coef = if (-half_order..=half_order).contains(&pos) {
-                let i0_1 = bessel_i0(beta * (1.0 - (pos / half_order).powi(2)).sqrt());
-                sinc_c(pos, cutoff) * (i0_1 / i0_beta)
-            } else {
-                0.0
-            };
-            coef_pos.push(coef);
+            coef_pos.push(windowed_sinc(pos, half_order, beta, i0_beta, cutoff));
         }
         lut.push(coef_pos);
     }
@@ -152,7 +160,6 @@ pub(crate) struct RationalConverter {
     pos: usize,
     numer: usize,
     denom: usize,
-    coefs: Vec<f64>,
 }
 
 pub(crate) struct RationalFastConverter {
@@ -239,12 +246,6 @@ impl FloatConverter {
 
 impl RationalConverter {
     fn new(step: Rational, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
-        let numer = *step.numer() as usize;
-        let denom = *step.denom() as usize;
-        let mut coefs = Vec::with_capacity(denom);
-        for i in 0..denom {
-            coefs.push(i as f64 / denom as f64);
-        }
         let taps = (order + 1) as usize;
         let mut buf = VecDeque::with_capacity(taps);
         buf.extend(std::iter::repeat_n(0.0, taps));
@@ -255,14 +256,13 @@ impl RationalConverter {
             quan: quan as f64,
             half_order: 0.5 * order as f64,
             pos: 0,
-            numer,
-            denom,
-            coefs,
+            numer: *step.numer() as usize,
+            denom: *step.denom() as usize,
         }
     }
 
     fn interpolate(&self) -> f64 {
-        let coef = self.coefs[self.pos];
+        let coef = self.pos as f64 / self.denom as f64;
         let mut interp = 0.0;
         let pos_max = self.filter.len() - 1;
         let taps = self.buf.len();
@@ -431,6 +431,20 @@ impl Convert for RationalFastConverter {
     }
 }
 
+fn delay_line_empty(buf: &VecDeque<f64>) -> bool {
+    buf.iter().all(|&x| x == 0.0)
+}
+
+impl Converter {
+    fn delay_empty(&self) -> bool {
+        match &self.inner {
+            ConverterKind::Float(c) => delay_line_empty(&c.buf),
+            ConverterKind::Rational(c) => delay_line_empty(&c.buf),
+            ConverterKind::RationalFast(c) => delay_line_empty(&c.buf),
+        }
+    }
+}
+
 impl Convert for Converter {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
@@ -444,6 +458,32 @@ impl Convert for Converter {
                 rational_fast_converter.next_sample(iter)
             }
         }
+    }
+
+    fn flush(&mut self, output: &mut [f64]) -> usize
+    where
+        Self: Sized,
+    {
+        // Overrides Convert::flush: stop when the FIR delay is empty instead of
+        // filling the whole buffer. Still call until 0 if `output` fills first.
+        if self.delay_empty() {
+            return 0;
+        }
+        let mut zeros = std::iter::repeat(0.0);
+        let mut produced = 0;
+        while produced < output.len() {
+            match self.next_sample(&mut zeros) {
+                Some(sample) => {
+                    output[produced] = sample;
+                    produced += 1;
+                    if self.delay_empty() {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        produced
     }
 }
 
@@ -586,7 +626,9 @@ impl Manager {
     /// Always uses half-table interpolation; `quantify` is required. For a
     /// polyphase LUT, use [`fast_with_raw`](Self::fast_with_raw).
     ///
-    /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`
+    /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`.
+    ///   Float values may be reduced to a rational under the rules on
+    ///   [`ConvertMode`]; use sample-rate constructors for exact pairs.
     /// - quan: the quantify number, usually power of 2, support `[1, 16384]`
     /// - order: the order of interpolation FIR filter, support `[1, 2048]`
     /// - kaiser_beta: the beta parameter of kaiser window method, support `[0.0, 20.0]`
@@ -608,7 +650,9 @@ impl Manager {
     /// interpolation; `quantify` is required. For a polyphase LUT, use
     /// [`fast`](Self::fast).
     ///
-    /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`
+    /// - ratio: the conversion ratio, fs_new / fs_old, support `[1/16, 16]`.
+    ///   Float values may be reduced to a rational under the rules on
+    ///   [`ConvertMode`]; use sample-rate constructors for exact pairs.
     /// - atten: the attenuation in dB, support `[12.0, 180.0]`
     /// - quan: the quantify number, usually power of 2, support `[1, 16384]`
     /// - trans_width: the transition band width in `[0.01, 1.0]`
@@ -786,18 +830,30 @@ impl Manager {
     }
 
     /// Conversion ratio `fs_new / fs_old` actually in use.
+    ///
+    /// For float constructors this is the approximated rational when one was
+    /// accepted, otherwise the original float. See [`ConvertMode`].
     #[inline]
     pub fn ratio(&self) -> f64 {
         self.ratio.as_float()
     }
 
     /// Reduced integer ratio, if a rational mode was selected.
+    ///
+    /// `None` when the float could not be fit within the bounded continued-
+    /// fraction rules (numerator/denominator ≤ 16384 and relative error
+    /// ≤ `1e-12`). Integer sample-rate APIs always yield `Some`.
     #[inline]
     pub fn ratio_parts(&self) -> Option<(i64, i64)> {
         self.ratio.parts()
     }
 
     /// Which interpolation implementation this manager will construct.
+    ///
+    /// Float ratios become [`ConvertMode::Rational`] / [`ConvertMode::RationalFast`]
+    /// only under the bounded approximation rules on [`ConvertMode`]; otherwise
+    /// [`ConvertMode::Float`]. Fast LUT constructors still require an eligible
+    /// rational and may return [`Error::FastUnavailable`].
     #[inline]
     pub fn mode(&self) -> ConvertMode {
         match self.lut {
@@ -811,8 +867,8 @@ impl Manager {
 
     /// Coefficient table length.
     ///
-    /// Generic is the half Kaiser-sinc table length. Fast is
-    /// `numer * (order + 1)`.
+    /// Generic is the half Kaiser-sinc table length, including the
+    /// interpolation pad. Fast is `numer * (order + 1)`.
     #[inline]
     pub fn lut_len(&self) -> usize {
         match &self.lut {
@@ -877,6 +933,9 @@ pub struct Builder {
 
 impl Builder {
     /// Set `ratio` in `[1/16, 16]`.
+    ///
+    /// May reduce to a bounded rational (see [`ConvertMode`]); use
+    /// [`Self::sample_rate`] for an exact integer rate pair.
     pub fn ratio(mut self, ratio: f64) -> Self {
         match Ratio::try_from_float(ratio) {
             Ok(r) => {
@@ -1103,7 +1162,7 @@ mod tests {
         assert!(Manager::new(2.0, 11.9, 32, 0.1).is_err());
         let generic = Manager::new(2.0, 72.0, 32, 0.1).unwrap();
         assert_eq!(generic.mode(), ConvertMode::Rational);
-        assert_eq!(generic.lut_len(), (generic.order() * 32 / 2 + 1) as usize);
+        assert_eq!(generic.lut_len(), generic_table_len(32, generic.order()));
     }
 
     #[test]
@@ -1134,7 +1193,7 @@ mod tests {
         assert_eq!(fast.mode(), ConvertMode::RationalFast);
         assert_eq!(
             generic.lut_len(),
-            (generic.order() * quality.quantify() / 2 + 1) as usize
+            generic_table_len(quality.quantify(), generic.order())
         );
     }
 
@@ -1181,5 +1240,62 @@ mod tests {
         assert!(preset.is_ok());
         assert_eq!(preset.as_ref().unwrap().ratio_parts(), Some((160, 147)));
         assert_eq!(preset.unwrap().mode(), ConvertMode::Rational);
+    }
+
+    #[test]
+    fn inexact_ratio_uses_float_phase() {
+        let manager = Manager::with_quality(std::f64::consts::PI, Quality::Bit8Fast, 0.2).unwrap();
+        assert_eq!(manager.mode(), ConvertMode::Float);
+        assert_eq!(manager.ratio_parts(), None);
+        assert!((manager.ratio() - std::f64::consts::PI).abs() < 1e-15);
+        assert!(matches!(
+            Manager::fast(std::f64::consts::PI, 48.0, 0.2),
+            Err(Error::FastUnavailable { numer: None, .. })
+        ));
+        let _ = manager.convert(&[1.0, 0.0, -1.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn odd_order_odd_quantify_covers_half_table() {
+        let odd = Manager::with_order(2.0, 48.0, 7, 5).unwrap();
+        let even = Manager::with_order(2.0, 48.0, 8, 5).unwrap();
+        assert_eq!(odd.lut_len(), generic_table_len(7, 5));
+        assert_eq!(even.lut_len(), generic_table_len(8, 5));
+        let input = vec![1.0; 64];
+        let odd_out = odd.convert(&input);
+        let even_out = even.convert(&input);
+        let dc = |m: &Manager, out: &[f64]| {
+            let start = m.latency().max(8);
+            let end = out.len().saturating_sub(8).max(start + 1);
+            let body = &out[start..end];
+            body.iter().sum::<f64>() / body.len() as f64
+        };
+        let odd_dc = dc(&odd, &odd_out);
+        let even_dc = dc(&even, &even_out);
+        assert!(
+            (odd_dc - even_dc).abs() < 0.02,
+            "odd dc {odd_dc} vs even dc {even_dc}"
+        );
+    }
+
+    #[test]
+    fn flush_stops_when_delay_empty() {
+        let manager = Manager::with_quality(2.0, Quality::Bit8Fast, 0.2).unwrap();
+        let mut cv = manager.converter();
+        assert_eq!(cv.flush(&mut [0.0; 64]), 0);
+        let input: Vec<f64> = (0..32).map(|i| (i as f64).sin()).collect();
+        let mut tmp = [0.0; 64];
+        let mut pos = 0;
+        while pos < input.len() {
+            let (c, _) = cv.process_block(&input[pos..], &mut tmp);
+            if c == 0 {
+                break;
+            }
+            pos += c;
+        }
+        let n = cv.flush(&mut [0.0; 4096]);
+        assert!(n > 0);
+        assert!(n < 4096, "flush should not fill a huge buffer, got {n}");
+        assert_eq!(cv.flush(&mut [0.0; 64]), 0);
     }
 }

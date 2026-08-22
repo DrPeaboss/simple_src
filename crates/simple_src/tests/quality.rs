@@ -20,7 +20,7 @@ fn tone(n: usize, freq: f64, sr: f64) -> Vec<f64> {
         .collect()
 }
 
-fn steady_body<'a>(out: &'a [f64], skip: usize) -> &'a [f64] {
+fn steady_body(out: &[f64], skip: usize) -> &[f64] {
     let s = skip.min(out.len() / 4);
     let e = out.len().saturating_sub(s).max(s + 1);
     &out[s..e]
@@ -71,10 +71,7 @@ fn sinc_dc_gain_high_and_low() {
     for ratio in [2.0, 0.5] {
         let m = sinc::Manager::with_quality(ratio, Quality::Bit8Fast, 0.2).unwrap();
         let err = dc_error_linear(&m, 1024);
-        assert!(
-            err < 5.8e-3,
-            "low-tier dc ratio={ratio} err={err}"
-        );
+        assert!(err < 5.8e-3, "low-tier dc ratio={ratio} err={err}");
     }
 }
 
@@ -123,9 +120,8 @@ fn sinc_impulse_latency_within_one_sample() {
 
 #[test]
 fn sample_rate_44100_48000_is_fast_rational() {
-    let up =
-        sinc::Manager::fast_with_sample_rate_quality(44100, 48000, Quality::Bit16Fast, 20000)
-            .unwrap();
+    let up = sinc::Manager::fast_with_sample_rate_quality(44100, 48000, Quality::Bit16Fast, 20000)
+        .unwrap();
     assert_eq!(up.mode(), ConvertMode::RationalFast);
     assert_eq!(up.ratio_parts(), Some((160, 147)));
 

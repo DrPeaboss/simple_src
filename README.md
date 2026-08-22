@@ -145,7 +145,7 @@ Generic-only.
 ## CLI
 
 ```
-cargo run -p simple_src_cli -- input.wav -r 48000 -o output.wav
+cargo run -p simple-src-cli -- input.wav -r 48000 -o output.wav
 ```
 
 The CLI uses Fast polyphase interpolation by default. Pass `--generic` (and

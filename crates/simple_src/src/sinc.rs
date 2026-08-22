@@ -1360,8 +1360,7 @@ mod tests {
 
     #[test]
     fn calc_order_adds_margin_and_is_even() {
-        let without_margin =
-            f64::ceil((96.0 - 8.0) / (2.285 * 0.1 * PI * 1.0)) as u32;
+        let without_margin = f64::ceil((96.0 - 8.0) / (2.285 * 0.1 * PI * 1.0)) as u32;
         let with_margin = calc_order(1.0, 96.0, 0.1);
         assert!(with_margin > without_margin);
         assert_eq!(with_margin % 2, 0);

@@ -2,8 +2,10 @@
 name = "simple_src"
 version = "0.4.0"
 edition.workspace = true
-authors = ["PeaZomboss <PeaZomboss@outlook.com>"]
+authors = ["Peaboss <pea-boss@outlook.com>"]
 license = "MIT"
+readme = "../../README.md"
+license-file = "../../LICENSE"
 description = "A simple sample rate conversion lib for audio."
 repository = "https://github.com/DrPeaboss/simple_src"
 keywords = ["audio", "dsp", "sample-rate"]

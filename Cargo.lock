@@ -266,22 +266,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "simple_src"
-version = "0.4.0"
-dependencies = [
- "divan",
- "hound",
- "num-rational",
-]
-
-[[package]]
-name = "simple_src_cli"
+name = "simple-src-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "hound",
  "simple_src",
+]
+
+[[package]]
+name = "simple_src"
+version = "0.4.0"
+dependencies = [
+ "divan",
+ "hound",
+ "num-rational",
 ]
 
 [[package]]

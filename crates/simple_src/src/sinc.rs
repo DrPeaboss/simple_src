@@ -40,12 +40,12 @@
 //! }
 //! ```
 
-use std::collections::VecDeque;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
 use super::{
-    Convert, ConvertMode, Error, Quality, Ratio, Rational, Result, convert_with, output_len,
+    Convert, ConvertMode, Error, Quality, Ratio, Rational, Result, convert_with, engine::FirState,
+    engine::FirTap, engine::PhaseAccum, output_len,
 };
 
 #[inline]
@@ -189,38 +189,28 @@ fn design_cutoff(ratio: f64, trans_width: f64) -> f64 {
     (nyquist * (1.0 - trans_width)).clamp(0.01, 1.0)
 }
 
-enum State {
-    Normal,
-    Suspend,
-}
-
 pub(crate) struct FloatConverter {
-    state: State,
-    buf: VecDeque<f64>,
+    phase: PhaseAccum,
+    state: FirState,
+    taps: FirTap,
     filter: Arc<Vec<f64>>,
     quan: f64,
     half_order: f64,
-    step: f64,
-    pos: f64,
 }
 
 pub(crate) struct RationalConverter {
-    state: State,
-    buf: VecDeque<f64>,
+    phase: PhaseAccum,
+    state: FirState,
+    taps: FirTap,
     filter: Arc<Vec<f64>>,
     quan: f64,
     half_order: f64,
-    pos: usize,
-    numer: usize,
-    denom: usize,
 }
 
 pub(crate) struct RationalFastConverter {
-    state: State,
-    buf: VecDeque<f64>,
-    pos: usize,
-    numer: usize,
-    denom: usize,
+    phase: PhaseAccum,
+    state: FirState,
+    taps: FirTap,
     lut: Arc<Vec<Vec<f64>>>,
 }
 
@@ -238,34 +228,31 @@ pub struct Converter {
 impl FloatConverter {
     fn new(step: f64, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
         let taps = (order + 1) as usize;
-        let mut buf = VecDeque::with_capacity(taps);
-        buf.extend(std::iter::repeat_n(0.0, taps));
         Self {
-            state: State::Normal,
-            buf,
+            phase: PhaseAccum::float(step),
+            state: FirState::new(),
+            taps: FirTap::new(taps),
             filter,
             quan: quan as f64,
             half_order: 0.5 * order as f64,
-            pos: 0.0,
-            step,
         }
     }
 
     fn interpolate(&self) -> f64 {
-        let coef = self.pos;
+        let coef = self.phase.pos_float();
         let mut interp = 0.0;
         let pos_max = self.filter.len() - 1;
-        let taps = self.buf.len();
-        let iter_count = taps / 2;
+        let tap_count = self.taps.len();
+        let iter_count = tap_count / 2;
         let mut left;
         let mut right;
-        if taps % 2 == 1 {
+        if tap_count % 2 == 1 {
             let pos = coef * self.quan;
             let posu = pos as usize;
             let h1 = self.filter[posu];
             let h2 = self.filter[posu + 1];
             let h = h1 + (h2 - h1) * (pos - posu as f64);
-            interp += self.buf[iter_count] * h;
+            interp += self.taps.get(iter_count) * h;
             left = iter_count - 1;
             right = iter_count + 1;
         } else {
@@ -282,13 +269,13 @@ impl FloatConverter {
                 let h1 = self.filter[pos1u];
                 let h2 = self.filter[pos1u + 1];
                 let h = h1 + (h2 - h1) * (pos1 - pos1u as f64);
-                interp += self.buf[left] * h;
+                interp += self.taps.get(left) * h;
             }
             if pos2u < pos_max {
                 let h1 = self.filter[pos2u];
                 let h2 = self.filter[pos2u + 1];
                 let h = h1 + (h2 - h1) * (pos2 - pos2u as f64);
-                interp += self.buf[right] * h;
+                interp += self.taps.get(right) * h;
             }
             left = left.wrapping_sub(1);
             right = right.wrapping_add(1);
@@ -300,35 +287,31 @@ impl FloatConverter {
 impl RationalConverter {
     fn new(step: Rational, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
         let taps = (order + 1) as usize;
-        let mut buf = VecDeque::with_capacity(taps);
-        buf.extend(std::iter::repeat_n(0.0, taps));
         Self {
-            state: State::Normal,
-            buf,
+            phase: PhaseAccum::rational(step),
+            state: FirState::new(),
+            taps: FirTap::new(taps),
             filter,
             quan: quan as f64,
             half_order: 0.5 * order as f64,
-            pos: 0,
-            numer: *step.numer() as usize,
-            denom: *step.denom() as usize,
         }
     }
 
     fn interpolate(&self) -> f64 {
-        let coef = self.pos as f64 / self.denom as f64;
+        let coef = self.phase.pos_float();
         let mut interp = 0.0;
         let pos_max = self.filter.len() - 1;
-        let taps = self.buf.len();
-        let iter_count = taps / 2;
+        let tap_count = self.taps.len();
+        let iter_count = tap_count / 2;
         let mut left;
         let mut right;
-        if taps % 2 == 1 {
+        if tap_count % 2 == 1 {
             let pos = coef * self.quan;
             let posu = pos as usize;
             let h1 = self.filter[posu];
             let h2 = self.filter[posu + 1];
             let h = h1 + (h2 - h1) * (pos - posu as f64);
-            interp += self.buf[iter_count] * h;
+            interp += self.taps.get(iter_count) * h;
             left = iter_count - 1;
             right = iter_count + 1;
         } else {
@@ -345,13 +328,13 @@ impl RationalConverter {
                 let h1 = self.filter[pos1u];
                 let h2 = self.filter[pos1u + 1];
                 let h = h1 + (h2 - h1) * (pos1 - pos1u as f64);
-                interp += self.buf[left] * h;
+                interp += self.taps.get(left) * h;
             }
             if pos2u < pos_max {
                 let h1 = self.filter[pos2u];
                 let h2 = self.filter[pos2u + 1];
                 let h = h1 + (h2 - h1) * (pos2 - pos2u as f64);
-                interp += self.buf[right] * h;
+                interp += self.taps.get(right) * h;
             }
             left = left.wrapping_sub(1);
             right = right.wrapping_add(1);
@@ -363,22 +346,18 @@ impl RationalConverter {
 impl RationalFastConverter {
     fn new(step: Rational, order: u32, lut: Arc<Vec<Vec<f64>>>) -> Self {
         let taps = (order + 1) as usize;
-        let mut buf = VecDeque::with_capacity(taps);
-        buf.extend(std::iter::repeat_n(0.0, taps));
         Self {
-            state: State::Normal,
-            buf,
-            pos: 0,
-            numer: *step.numer() as usize,
-            denom: *step.denom() as usize,
+            phase: PhaseAccum::rational(step),
+            state: FirState::new(),
+            taps: FirTap::new(taps),
             lut,
         }
     }
 
     fn interpolate(&self) -> f64 {
-        self.lut[self.pos]
+        self.lut[self.phase.pos_usize()]
             .iter()
-            .zip(self.buf.iter())
+            .zip(self.taps.iter())
             .map(|(h, s)| h * s)
             .sum()
     }
@@ -391,26 +370,24 @@ impl Convert for FloatConverter {
     {
         loop {
             match self.state {
-                State::Normal => {
-                    while self.pos >= 1.0 {
-                        self.pos -= 1.0;
+                FirState::Running => {
+                    while self.phase.needs_input_advance() {
+                        self.phase.consume_input_step();
                         if let Some(s) = iter.next() {
-                            self.buf.pop_front();
-                            self.buf.push_back(s);
+                            self.taps.shift(s);
                         } else {
-                            self.state = State::Suspend;
+                            self.state = self.state.on_input_exhausted();
                             return None;
                         }
                     }
                     let interp = self.interpolate();
-                    self.pos += self.step;
+                    self.phase.advance_output();
                     return Some(interp);
                 }
-                State::Suspend => {
+                FirState::Suspended => {
                     let s = iter.next()?;
-                    self.buf.pop_front();
-                    self.buf.push_back(s);
-                    self.state = State::Normal;
+                    self.taps.shift(s);
+                    self.state = self.state.on_input_resumed();
                 }
             }
         }
@@ -424,26 +401,24 @@ impl Convert for RationalConverter {
     {
         loop {
             match self.state {
-                State::Normal => {
-                    while self.pos >= self.denom {
-                        self.pos -= self.denom;
+                FirState::Running => {
+                    while self.phase.needs_input_advance() {
+                        self.phase.consume_input_step();
                         if let Some(s) = iter.next() {
-                            self.buf.pop_front();
-                            self.buf.push_back(s);
+                            self.taps.shift(s);
                         } else {
-                            self.state = State::Suspend;
+                            self.state = self.state.on_input_exhausted();
                             return None;
                         }
                     }
                     let interp = self.interpolate();
-                    self.pos += self.numer;
+                    self.phase.advance_output();
                     return Some(interp);
                 }
-                State::Suspend => {
+                FirState::Suspended => {
                     let s = iter.next()?;
-                    self.buf.pop_front();
-                    self.buf.push_back(s);
-                    self.state = State::Normal;
+                    self.taps.shift(s);
+                    self.state = self.state.on_input_resumed();
                 }
             }
         }
@@ -458,42 +433,36 @@ impl Convert for RationalFastConverter {
     {
         loop {
             match self.state {
-                State::Normal => {
-                    while self.pos >= self.denom {
-                        self.pos -= self.denom;
+                FirState::Running => {
+                    while self.phase.needs_input_advance() {
+                        self.phase.consume_input_step();
                         if let Some(s) = iter.next() {
-                            self.buf.pop_front();
-                            self.buf.push_back(s);
+                            self.taps.shift(s);
                         } else {
-                            self.state = State::Suspend;
+                            self.state = self.state.on_input_exhausted();
                             return None;
                         }
                     }
                     let interp = self.interpolate();
-                    self.pos += self.numer;
+                    self.phase.advance_output();
                     return Some(interp);
                 }
-                State::Suspend => {
+                FirState::Suspended => {
                     let s = iter.next()?;
-                    self.buf.pop_front();
-                    self.buf.push_back(s);
-                    self.state = State::Normal;
+                    self.taps.shift(s);
+                    self.state = self.state.on_input_resumed();
                 }
             }
         }
     }
 }
 
-fn delay_line_empty(buf: &VecDeque<f64>) -> bool {
-    buf.iter().all(|&x| x == 0.0)
-}
-
 impl Converter {
     fn delay_empty(&self) -> bool {
         match &self.inner {
-            ConverterKind::Float(c) => delay_line_empty(&c.buf),
-            ConverterKind::Rational(c) => delay_line_empty(&c.buf),
-            ConverterKind::RationalFast(c) => delay_line_empty(&c.buf),
+            ConverterKind::Float(c) => c.taps.is_empty(),
+            ConverterKind::Rational(c) => c.taps.is_empty(),
+            ConverterKind::RationalFast(c) => c.taps.is_empty(),
         }
     }
 }

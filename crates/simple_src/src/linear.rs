@@ -11,37 +11,27 @@
 //! }
 //! ```
 
-use super::{Convert, ConvertMode, Ratio, Rational, Result, convert_with, output_len};
-
-enum State {
-    First,
-    Normal,
-    Suspend,
-}
+use super::{
+    Convert, ConvertMode, Ratio, Rational, Result, convert_with, engine::LinearState,
+    engine::PhaseAccum, engine::TwoTap, output_len,
+};
 
 pub(crate) struct FloatConverter {
-    state: State,
-    last_in: [f64; 2],
-    step: f64,
-    pos: f64,
+    phase: PhaseAccum,
+    state: LinearState,
+    taps: TwoTap,
 }
 
 pub(crate) struct RationalConverter {
-    state: State,
-    last_in: [f64; 2],
-    numer: usize,
-    denom: usize,
-    pos: usize,
-    recip: f64,
+    phase: PhaseAccum,
+    state: LinearState,
+    taps: TwoTap,
 }
 
 pub(crate) struct RationalFastConverter {
-    state: State,
-    last_in: [f64; 2],
-    numer: usize,
-    denom: usize,
-    pos: usize,
-    coef: Vec<f64>,
+    phase: PhaseAccum,
+    state: LinearState,
+    taps: TwoTap,
 }
 
 enum ConverterKind {
@@ -58,10 +48,9 @@ pub struct Converter {
 impl FloatConverter {
     fn new(step: f64) -> Self {
         Self {
-            step,
-            pos: 0.0,
-            last_in: [0.0; 2],
-            state: State::First,
+            phase: PhaseAccum::float(step),
+            state: LinearState::new(),
+            taps: TwoTap::new(),
         }
     }
 }
@@ -74,32 +63,31 @@ impl Convert for FloatConverter {
     {
         loop {
             match self.state {
-                State::First => {
+                LinearState::Priming => {
                     let s = iter.next()?;
-                    self.last_in[1] = s;
-                    self.pos = 1.0;
-                    self.state = State::Normal;
+                    self.taps.set_second(s);
+                    self.phase.prepare_linear_priming();
+                    self.state = self.state.finish_priming();
                 }
-                State::Normal => {
-                    while self.pos >= 1.0 {
-                        self.pos -= 1.0;
-                        self.last_in[0] = self.last_in[1];
+                LinearState::Running => {
+                    while self.phase.needs_input_advance() {
+                        self.phase.consume_input_step();
                         if let Some(s) = iter.next() {
-                            self.last_in[1] = s;
+                            self.taps.shift(s);
                         } else {
-                            self.state = State::Suspend;
+                            self.taps.advance_left();
+                            self.state = self.state.on_input_exhausted();
                             return None;
                         }
                     }
-                    let coef = self.pos;
-                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
-                    self.pos += self.step;
+                    let interp = self.taps.interpolate(self.phase.coef());
+                    self.phase.advance_output();
                     return Some(interp);
                 }
-                State::Suspend => {
+                LinearState::Suspended => {
                     let s = iter.next()?;
-                    self.last_in[1] = s;
-                    self.state = State::Normal;
+                    self.taps.set_second(s);
+                    self.state = self.state.on_input_resumed();
                 }
             }
         }
@@ -108,15 +96,10 @@ impl Convert for FloatConverter {
 
 impl RationalConverter {
     fn new(step: Rational) -> Self {
-        let numer = *step.numer() as usize;
-        let denom = *step.denom() as usize;
         Self {
-            state: State::First,
-            last_in: [0.0; 2],
-            numer,
-            denom,
-            pos: 0,
-            recip: (denom as f64).recip(),
+            phase: PhaseAccum::rational(step),
+            state: LinearState::new(),
+            taps: TwoTap::new(),
         }
     }
 }
@@ -128,32 +111,31 @@ impl Convert for RationalConverter {
     {
         loop {
             match self.state {
-                State::First => {
+                LinearState::Priming => {
                     let s = iter.next()?;
-                    self.last_in[1] = s;
-                    self.pos = self.numer;
-                    self.state = State::Normal;
+                    self.taps.set_second(s);
+                    self.phase.prepare_linear_priming();
+                    self.state = self.state.finish_priming();
                 }
-                State::Normal => {
-                    while self.pos >= self.denom {
-                        self.pos -= self.denom;
-                        self.last_in[0] = self.last_in[1];
+                LinearState::Running => {
+                    while self.phase.needs_input_advance() {
+                        self.phase.consume_input_step();
                         if let Some(s) = iter.next() {
-                            self.last_in[1] = s;
+                            self.taps.shift(s);
                         } else {
-                            self.state = State::Suspend;
+                            self.taps.advance_left();
+                            self.state = self.state.on_input_exhausted();
                             return None;
                         }
                     }
-                    let coef = self.pos as f64 * self.recip;
-                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
-                    self.pos += self.numer;
+                    let interp = self.taps.interpolate(self.phase.coef());
+                    self.phase.advance_output();
                     return Some(interp);
                 }
-                State::Suspend => {
+                LinearState::Suspended => {
                     let s = iter.next()?;
-                    self.last_in[1] = s;
-                    self.state = State::Normal;
+                    self.taps.set_second(s);
+                    self.state = self.state.on_input_resumed();
                 }
             }
         }
@@ -162,16 +144,10 @@ impl Convert for RationalConverter {
 
 impl RationalFastConverter {
     fn new(step: Rational) -> Self {
-        let numer = *step.numer() as usize;
-        let denom = *step.denom() as usize;
-        let coef = (0..denom).map(|i| i as f64 / denom as f64).collect();
         Self {
-            numer,
-            denom,
-            pos: 0,
-            coef,
-            last_in: [0.0; 2],
-            state: State::First,
+            phase: PhaseAccum::rational_fast_linear(step),
+            state: LinearState::new(),
+            taps: TwoTap::new(),
         }
     }
 }
@@ -183,32 +159,31 @@ impl Convert for RationalFastConverter {
     {
         loop {
             match self.state {
-                State::First => {
+                LinearState::Priming => {
                     let s = iter.next()?;
-                    self.last_in[1] = s;
-                    self.pos = self.numer;
-                    self.state = State::Normal;
+                    self.taps.set_second(s);
+                    self.phase.prepare_linear_priming();
+                    self.state = self.state.finish_priming();
                 }
-                State::Normal => {
-                    while self.pos >= self.denom {
-                        self.pos -= self.denom;
-                        self.last_in[0] = self.last_in[1];
+                LinearState::Running => {
+                    while self.phase.needs_input_advance() {
+                        self.phase.consume_input_step();
                         if let Some(s) = iter.next() {
-                            self.last_in[1] = s;
+                            self.taps.shift(s);
                         } else {
-                            self.state = State::Suspend;
+                            self.taps.advance_left();
+                            self.state = self.state.on_input_exhausted();
                             return None;
                         }
                     }
-                    let coef = self.coef[self.pos];
-                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
-                    self.pos += self.numer;
+                    let interp = self.taps.interpolate(self.phase.coef());
+                    self.phase.advance_output();
                     return Some(interp);
                 }
-                State::Suspend => {
+                LinearState::Suspended => {
                     let s = iter.next()?;
-                    self.last_in[1] = s;
-                    self.state = State::Normal;
+                    self.taps.set_second(s);
+                    self.state = self.state.on_input_resumed();
                 }
             }
         }
@@ -218,15 +193,9 @@ impl Convert for RationalFastConverter {
 impl Converter {
     fn delay_empty(&self) -> bool {
         match &self.inner {
-            ConverterKind::Float(c) => {
-                matches!(c.state, State::First) || (c.last_in[0] == 0.0 && c.last_in[1] == 0.0)
-            }
-            ConverterKind::Rational(c) => {
-                matches!(c.state, State::First) || (c.last_in[0] == 0.0 && c.last_in[1] == 0.0)
-            }
-            ConverterKind::RationalFast(c) => {
-                matches!(c.state, State::First) || (c.last_in[0] == 0.0 && c.last_in[1] == 0.0)
-            }
+            ConverterKind::Float(c) => c.state.is_priming() || c.taps.is_empty(),
+            ConverterKind::Rational(c) => c.state.is_priming() || c.taps.is_empty(),
+            ConverterKind::RationalFast(c) => c.state.is_priming() || c.taps.is_empty(),
         }
     }
 
@@ -384,5 +353,54 @@ mod tests {
         let pi = Manager::new(std::f64::consts::PI).unwrap();
         assert_eq!(pi.mode(), ConvertMode::Float);
         assert_eq!(pi.ratio_parts(), None);
+    }
+
+    #[test]
+    fn chunked_input_matches_continuous() {
+        let manager = Manager::new(2.0).unwrap();
+        let input = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+
+        let continuous = collect_linear(&manager, &input);
+        let chunked = collect_linear_chunks(&manager, &[&input[..5], &input[5..]]);
+
+        assert_eq!(continuous.len(), chunked.len());
+        for (a, b) in continuous.iter().zip(chunked.iter()) {
+            assert!((a - b).abs() < 1e-12, "chunked resume mismatch: {a} vs {b}");
+        }
+    }
+
+    fn collect_linear(manager: &Manager, input: &[f64]) -> Vec<f64> {
+        let mut converter = manager.converter();
+        let mut out = Vec::new();
+        let mut iter = input.iter().copied();
+        while let Some(sample) = converter.next_sample(&mut iter) {
+            out.push(sample);
+        }
+        drain_linear_flush(&mut converter, &mut out);
+        out
+    }
+
+    fn collect_linear_chunks(manager: &Manager, chunks: &[&[f64]]) -> Vec<f64> {
+        let mut converter = manager.converter();
+        let mut out = Vec::new();
+        for chunk in chunks {
+            let mut iter = chunk.iter().copied();
+            while let Some(sample) = converter.next_sample(&mut iter) {
+                out.push(sample);
+            }
+        }
+        drain_linear_flush(&mut converter, &mut out);
+        out
+    }
+
+    fn drain_linear_flush(converter: &mut Converter, out: &mut Vec<f64>) {
+        let mut tail = [0.0; 16];
+        loop {
+            let n = converter.flush(&mut tail);
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&tail[..n]);
+        }
     }
 }

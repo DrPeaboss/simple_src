@@ -24,6 +24,7 @@
 pub mod linear;
 pub mod sinc;
 
+mod engine;
 mod quality;
 mod ratio;
 

@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use simple_src::sinc;
+use simple_src::SrcManager;
 
 const SOURCE_FILE: &str = "two_channels_44k.wav";
 const TARGET_FILE: &str = "two_channels_44k_48k.wav";
@@ -32,13 +32,13 @@ fn convert_to_48k() {
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(TARGET_FILE, spec).unwrap();
-    let manager = sinc::Manager::fast_with_sample_rate_quality(
-        44100,
-        48000,
-        simple_src::Quality::Bit16Medium,
-        20000,
-    )
-    .unwrap();
+    let manager = SrcManager::builder()
+        .sample_rate(44100, 48000)
+        .fast()
+        .quality(simple_src::Quality::Bit16Medium)
+        .pass_freq(20000)
+        .build()
+        .unwrap();
 
     let mut left = Vec::new();
     let mut right = Vec::new();

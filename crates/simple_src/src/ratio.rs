@@ -2,7 +2,7 @@ use super::{ConvertMode, Error, Result};
 
 pub type Rational = num_rational::Rational64;
 
-const LINEAR_FAST_NUMER_MAX: i64 = 16384;
+pub(crate) const LINEAR_FAST_NUMER_MAX: i64 = 16384;
 const SINC_FAST_NUMER_MAX: i64 = 1024;
 /// Max numerator or denominator accepted from a float approximation.
 /// Documented for callers via [`ConvertMode`] and Manager docs.

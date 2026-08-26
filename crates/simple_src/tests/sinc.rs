@@ -1,11 +1,11 @@
 use std::io::Write;
 
-use simple_src::{Convert, sinc};
+use simple_src::{Convert, SrcBuilder, SrcManager};
 
 struct Src {
     sr_old: u32,
     sr_new: u32,
-    manager: sinc::Manager,
+    manager: SrcManager,
 }
 
 impl Src {
@@ -13,7 +13,13 @@ impl Src {
         Self {
             sr_old,
             sr_new,
-            manager: sinc::Manager::with_order(sr_new as f64 / sr_old as f64, atten, quan, order)
+            manager: SrcManager::builder()
+                .ratio(sr_new as f64 / sr_old as f64)
+                .generic()
+                .attenuation(atten)
+                .quantify(quan)
+                .order(order)
+                .build()
                 .unwrap(),
         }
     }
@@ -28,12 +34,18 @@ impl Src {
         Self {
             sr_old,
             sr_new,
-            manager: sinc::Manager::new(sr_new as f64 / sr_old as f64, atten, quan, trans_width)
+            manager: SrcManager::builder()
+                .ratio(sr_new as f64 / sr_old as f64)
+                .generic()
+                .attenuation(atten)
+                .quantify(quan)
+                .trans_width(trans_width)
+                .build()
                 .unwrap(),
         }
     }
 
-    fn new_by_builder(sr_old: u32, sr_new: u32, builder: sinc::Builder) -> Self {
+    fn new_by_builder(sr_old: u32, sr_new: u32, builder: SrcBuilder) -> Self {
         Self {
             sr_old,
             sr_new,
@@ -145,12 +157,18 @@ fn ta100_2() {
     let remark = "a100_2";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 100.0, 128, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 100.0, 128, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
@@ -164,12 +182,18 @@ fn ta120_1() {
     let remark = "a120_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 120.0, 128, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 120.0, 128, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
@@ -183,10 +207,16 @@ fn ta110_1() {
     let remark = "a110_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 110.0, 128, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     impulse(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 110.0, 128, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     impulse(&src, remark);
 }
 
@@ -198,11 +228,17 @@ fn ta120_2() {
     let remark = "a120_2";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 120.0, 512, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 120.0, 512, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
 }
@@ -215,11 +251,17 @@ fn ta144_1() {
     let remark = "a144_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 144.0, 2048, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 144.0, 2048, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
 }
@@ -232,12 +274,18 @@ fn ta156_1() {
     let remark = "a156_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 156.0, 4096, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 156.0, 4096, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
@@ -251,12 +299,18 @@ fn ta168_1() {
     let remark = "a168_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 168.0, 8192, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 168.0, 8192, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
@@ -270,12 +324,18 @@ fn ta150_1() {
     let remark = "a150_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(44100, 48000, 150.0, 2048, trans_width);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
     let src = Src::new_by_trans_width(48000, 44100, 150.0, 2048, trans_width);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     impulse(&src, remark);
     impulse_raw(&src, remark);
@@ -289,11 +349,17 @@ fn ta150_1_96k_down() {
     let remark = "a150_1";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(96000, 44100, 150.0, 2048, trans_width);
-    println!("order of 96k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 96k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
     let trans_width = 4000.0 / 24000.0;
     let src = Src::new_by_trans_width(96000, 48000, 150.0, 2048, trans_width);
-    println!("order of 96k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 96k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("sweep", &src, remark);
 }
 
@@ -305,13 +371,19 @@ fn ta120_2_96k_down() {
     let remark = "a120_2";
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(96000, 44100, 120.0, 512, trans_width);
-    println!("order of 96 to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 96 to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
     let trans_width = 4000.0 / 24000.0;
     let src = Src::new_by_trans_width(96000, 48000, 120.0, 512, trans_width);
-    println!("order of 96k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 96k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
@@ -323,10 +395,16 @@ fn ta120_2_96k_down() {
 fn ta120_2_192k_down_order() {
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(192000, 44100, 120.0, 512, trans_width);
-    println!("order of 192k to 44k a120 is {}", src.manager.order());
+    println!(
+        "order of 192k to 44k a120 is {}",
+        src.manager.order().unwrap()
+    );
     let trans_width = 4000.0 / 24000.0;
     let src = Src::new_by_trans_width(192000, 48000, 120.0, 512, trans_width);
-    println!("order of 192k to 48k a120 is {}", src.manager.order());
+    println!(
+        "order of 192k to 48k a120 is {}",
+        src.manager.order().unwrap()
+    );
 }
 
 #[test]
@@ -335,10 +413,16 @@ fn ta120_2_192k_down_order() {
 fn ta150_1_192k_down_order() {
     let trans_width = 2050.0 / 22050.0;
     let src = Src::new_by_trans_width(192000, 44100, 150.0, 2048, trans_width);
-    println!("order of 192k to 44k a150 is {}", src.manager.order());
+    println!(
+        "order of 192k to 44k a150 is {}",
+        src.manager.order().unwrap()
+    );
     let trans_width = 4000.0 / 24000.0;
     let src = Src::new_by_trans_width(192000, 48000, 150.0, 2048, trans_width);
-    println!("order of 192k to 48k a150 is {}", src.manager.order());
+    println!(
+        "order of 192k to 48k a150 is {}",
+        src.manager.order().unwrap()
+    );
 }
 
 #[test]
@@ -347,23 +431,29 @@ fn ta150_1_192k_down_order() {
 fn ta96_1() {
     cwd();
     let remark = "a96_1";
-    let builder = sinc::Builder::default()
+    let builder = SrcManager::builder()
         .sample_rate(44100, 48000)
         .attenuation(96)
         .quantify(128)
         .pass_freq(20000);
     let src = Src::new_by_builder(44100, 48000, builder);
-    println!("order of 44k to 48k {remark} is {}", src.manager.order());
+    println!(
+        "order of 44k to 48k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
-    let builder = sinc::Builder::default()
+    let builder = SrcManager::builder()
         .sample_rate(48000, 44100)
         .attenuation(96)
         .quantify(128)
         .pass_freq(20000);
     let src = Src::new_by_builder(48000, 44100, builder);
-    println!("order of 48k to 44k {remark} is {}", src.manager.order());
+    println!(
+        "order of 48k to 44k {remark} is {}",
+        src.manager.order().unwrap()
+    );
     convert("beep", &src, remark);
     convert("sweep", &src, remark);
     impulse(&src, remark);
@@ -372,7 +462,14 @@ fn ta96_1() {
 #[test]
 #[ignore = "display only"]
 fn tmultithread() {
-    let manager = sinc::Manager::new(2.0, 30.0, 16, 0.1).unwrap();
+    let manager = SrcManager::builder()
+        .ratio(2.0)
+        .generic()
+        .attenuation(30.0)
+        .quantify(16)
+        .trans_width(0.1)
+        .build()
+        .unwrap();
     let manager2 = manager.clone();
     let h1 = std::thread::spawn(move || {
         let mut converter = manager.converter();

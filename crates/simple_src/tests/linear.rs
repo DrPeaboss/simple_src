@@ -1,4 +1,4 @@
-use simple_src::{Convert, linear::Manager};
+use simple_src::{Convert, SrcManager};
 
 fn convert(file_prefix: &str, sr_old: u32, sr_new: u32) {
     let ratio = sr_new as f64 / sr_old as f64;
@@ -21,7 +21,7 @@ fn convert(file_prefix: &str, sr_old: u32, sr_new: u32) {
         .samples::<f32>()
         .map(|s| s.unwrap() as f64)
         .chain(std::iter::repeat(0.0));
-    Manager::new(ratio)
+    SrcManager::with_ratio(ratio)
         .unwrap()
         .converter()
         .process(in_iter)
@@ -46,7 +46,8 @@ fn tlinear() {
 #[test]
 #[ignore = "display only"]
 fn tmultithread() {
-    let manager = Manager::new(2.0).unwrap();
+    let manager = SrcManager::with_ratio(2.0).unwrap();
+    let manager2 = manager.clone();
     let h1 = std::thread::spawn(move || {
         let mut converter = manager.converter();
         let samples = (0..10).map(|x| x as f64);
@@ -55,7 +56,7 @@ fn tmultithread() {
         }
     });
     let h2 = std::thread::spawn(move || {
-        let mut converter = manager.converter();
+        let mut converter = manager2.converter();
         let samples = (-10..0).map(|x| x as f64);
         for s in converter.process(samples) {
             println!("{s}");

@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use simple_src::{Convert, ConvertMode, Quality, linear, sinc};
+use simple_src::{Convert, ConvertMode, Quality, SrcManager};
 
 fn mean(xs: &[f64]) -> f64 {
     xs.iter().sum::<f64>() / xs.len() as f64
@@ -26,16 +26,17 @@ fn steady_body(out: &[f64], skip: usize) -> &[f64] {
     &out[s..e]
 }
 
-fn dc_error_linear(manager: &sinc::Manager, n: usize) -> f64 {
-    let out = manager.convert(&vec![1.0; n]);
-    let body = steady_body(&out, manager.latency().max(64));
+/// Absolute DC gain error (linear amplitude, not dB).
+fn dc_gain_error(src: &SrcManager, n: usize) -> f64 {
+    let out = src.convert(&vec![1.0; n]);
+    let body = steady_body(&out, src.latency().max(64));
     (mean(body) - 1.0).abs()
 }
 
-fn tone_gain_db(manager: &sinc::Manager, freq: f64, sr_in: f64, n_in: usize) -> f64 {
+fn tone_gain_db(src: &SrcManager, freq: f64, sr_in: f64, n_in: usize) -> f64 {
     let input = tone(n_in, freq, sr_in);
-    let out = manager.convert(&input);
-    let skip = manager.latency().max(512);
+    let out = src.convert(&input);
+    let skip = src.latency().max(512);
     let in_body = &input[skip.min(input.len() / 4)..input.len().saturating_sub(skip).max(skip + 1)];
     let out_body = steady_body(&out, skip);
     db(rms(out_body) / rms(in_body).max(1e-20))
@@ -43,9 +44,9 @@ fn tone_gain_db(manager: &sinc::Manager, freq: f64, sr_in: f64, n_in: usize) -> 
 
 #[test]
 fn linear_dc_gain() {
-    let manager = linear::Manager::new(2.0).unwrap();
+    let src = SrcManager::with_ratio(2.0).unwrap();
     let input = vec![1.0; 64];
-    let output = manager.convert(&input);
+    let output = src.convert(&input);
     assert_eq!(output.len(), 128);
     let body = &output[8..output.len() - 8];
     let avg = mean(body);
@@ -60,8 +61,14 @@ fn sinc_dc_gain_high_and_low() {
         (0.5, Quality::Bit16Fast, 0.1),
         (48000.0 / 44100.0, Quality::Bit16Better, 0.1),
     ] {
-        let m = sinc::Manager::with_quality(ratio, quality, tw).unwrap();
-        let err = dc_error_linear(&m, 1024);
+        let src = SrcManager::builder()
+            .ratio(ratio)
+            .generic()
+            .quality(quality)
+            .trans_width(tw)
+            .build()
+            .unwrap();
+        let err = dc_gain_error(&src, 1024);
         assert!(
             err < 1.15e-4,
             "high-tier dc ratio={ratio} quality={quality:?} err={err}"
@@ -69,8 +76,14 @@ fn sinc_dc_gain_high_and_low() {
     }
     // Low tier: < 0.05 dB ≈ 5.8e-3 linear.
     for ratio in [2.0, 0.5] {
-        let m = sinc::Manager::with_quality(ratio, Quality::Bit8Fast, 0.2).unwrap();
-        let err = dc_error_linear(&m, 1024);
+        let src = SrcManager::builder()
+            .ratio(ratio)
+            .generic()
+            .quality(Quality::Bit8Fast)
+            .trans_width(0.2)
+            .build()
+            .unwrap();
+        let err = dc_gain_error(&src, 1024);
         assert!(err < 5.8e-3, "low-tier dc ratio={ratio} err={err}");
     }
 }
@@ -82,13 +95,19 @@ fn sinc_impulse_latency_within_one_sample() {
         (2.0, Quality::Bit16Fast, 0.1),
         (0.5, Quality::Bit16Fast, 0.1),
     ] {
-        let manager = sinc::Manager::with_quality(ratio, quality, tw).unwrap();
+        let src = SrcManager::builder()
+            .ratio(ratio)
+            .generic()
+            .quality(quality)
+            .trans_width(tw)
+            .build()
+            .unwrap();
         let mut input = vec![0.0; 256];
         input[0] = 1.0;
-        let mut cv = manager.converter();
+        let mut cv = src.converter();
         let raw: Vec<f64> = cv
             .process(input.iter().copied().chain(std::iter::repeat(0.0)))
-            .take(manager.latency() + 32)
+            .take(src.latency() + 32)
             .collect();
         let peak = raw
             .iter()
@@ -96,7 +115,7 @@ fn sinc_impulse_latency_within_one_sample() {
             .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
             .map(|(i, _)| i)
             .unwrap();
-        let latency = manager.latency();
+        let latency = src.latency();
         // Unity ratio stays within one sample; non-integer phase rounding can
         // shift the absolute peak by an extra sample when ratio ≠ 1.
         let tol = if (ratio - 1.0).abs() < 1e-12 { 1 } else { 2 };
@@ -104,7 +123,7 @@ fn sinc_impulse_latency_within_one_sample() {
             peak.abs_diff(latency) <= tol,
             "ratio={ratio} peak={peak} latency={latency} tol={tol}"
         );
-        let compensated = manager.convert(&input);
+        let compensated = src.convert(&input);
         let peak2 = compensated
             .iter()
             .enumerate()
@@ -120,33 +139,54 @@ fn sinc_impulse_latency_within_one_sample() {
 
 #[test]
 fn sample_rate_44100_48000_is_fast_rational() {
-    let up = sinc::Manager::fast_with_sample_rate_quality(44100, 48000, Quality::Bit16Fast, 20000)
+    let up = SrcManager::builder()
+        .sample_rate(44100, 48000)
+        .fast()
+        .quality(Quality::Bit16Fast)
+        .pass_freq(20000)
+        .build()
         .unwrap();
     assert_eq!(up.mode(), ConvertMode::RationalFast);
     assert_eq!(up.ratio_parts(), Some((160, 147)));
 
-    let down =
-        sinc::Manager::fast_with_sample_rate_quality(48000, 44100, Quality::Bit16Fast, 20000)
-            .unwrap();
+    let down = SrcManager::builder()
+        .sample_rate(48000, 44100)
+        .fast()
+        .quality(Quality::Bit16Fast)
+        .pass_freq(20000)
+        .build()
+        .unwrap();
     assert_eq!(down.mode(), ConvertMode::RationalFast);
     assert_eq!(down.ratio_parts(), Some((147, 160)));
 }
 
 #[test]
 fn float_ratio_pi_uses_float_phase() {
-    let manager = sinc::Manager::with_quality(PI, Quality::Bit8Fast, 0.2).unwrap();
-    assert_eq!(manager.mode(), ConvertMode::Float);
-    assert_eq!(manager.ratio_parts(), None);
+    let src = SrcManager::builder()
+        .ratio(PI)
+        .generic()
+        .quality(Quality::Bit8Fast)
+        .trans_width(0.2)
+        .build()
+        .unwrap();
+    assert_eq!(src.mode(), ConvertMode::Float);
+    assert_eq!(src.ratio_parts(), None);
     // Must complete without allocating a huge rational coef table.
-    let out = manager.convert(&[1.0, 0.0, -1.0, 0.0, 1.0, 0.0]);
-    assert_eq!(out.len(), manager.output_len(6));
+    let out = src.convert(&[1.0, 0.0, -1.0, 0.0, 1.0, 0.0]);
+    assert_eq!(out.len(), src.output_len(6));
 }
 
 #[test]
 fn process_block_roundtrip_length() {
-    let manager = sinc::Manager::with_quality(2.0, Quality::Bit8Fast, 0.2).unwrap();
+    let src = SrcManager::builder()
+        .ratio(2.0)
+        .generic()
+        .quality(Quality::Bit8Fast)
+        .trans_width(0.2)
+        .build()
+        .unwrap();
     let input: Vec<f64> = (0..100).map(|i| i as f64).collect();
-    let mut cv = manager.converter();
+    let mut cv = src.converter();
     let mut collected = Vec::new();
     let mut pos = 0;
     let mut tmp = [0.0; 32];
@@ -161,16 +201,22 @@ fn process_block_roundtrip_length() {
     let mut tail = [0.0; 256];
     let n = cv.flush(&mut tail);
     collected.extend_from_slice(&tail[..n]);
-    let skipped: Vec<_> = collected.into_iter().skip(manager.latency()).collect();
-    assert!(skipped.len() >= manager.output_len(input.len()));
+    let skipped: Vec<_> = collected.into_iter().skip(src.latency()).collect();
+    assert!(skipped.len() >= src.output_len(input.len()));
 }
 
 #[test]
 fn flush_then_convert_length_still_matches() {
-    let manager = sinc::Manager::with_quality(2.0, Quality::Bit8Better, 0.1).unwrap();
+    let src = SrcManager::builder()
+        .ratio(2.0)
+        .generic()
+        .quality(Quality::Bit8Better)
+        .trans_width(0.1)
+        .build()
+        .unwrap();
     let input: Vec<f64> = (0..64).map(|i| (i as f64 * 0.1).sin()).collect();
-    let via_convert = manager.convert(&input);
-    let mut cv = manager.converter();
+    let via_convert = src.convert(&input);
+    let mut cv = src.converter();
     let mut collected = Vec::new();
     let mut pos = 0;
     let mut tmp = [0.0; 16];
@@ -187,7 +233,7 @@ fn flush_then_convert_length_still_matches() {
     collected.extend_from_slice(&tail[..n]);
     assert!(n < tail.len());
     assert_eq!(cv.flush(&mut tail), 0);
-    let skipped: Vec<_> = collected.into_iter().skip(manager.latency()).collect();
+    let skipped: Vec<_> = collected.into_iter().skip(src.latency()).collect();
     assert!(
         skipped.len() + 2 >= via_convert.len(),
         "stream {} convert {}",
@@ -199,11 +245,16 @@ fn flush_then_convert_length_still_matches() {
 #[test]
 fn passband_gain_48k_to_44k1() {
     let quality = Quality::Bit16Better;
-    let manager =
-        sinc::Manager::fast_with_sample_rate_quality(48000, 44100, quality, 20000).unwrap();
+    let src = SrcManager::builder()
+        .sample_rate(48000, 44100)
+        .fast()
+        .quality(quality)
+        .pass_freq(20000)
+        .build()
+        .unwrap();
     let n = 48000;
     for freq in [1000.0, 18000.0] {
-        let g = tone_gain_db(&manager, freq, 48000.0, n);
+        let g = tone_gain_db(&src, freq, 48000.0, n);
         assert!(
             g.abs() < 0.05,
             "passband {freq} Hz gain {g} dB (want |g|<0.05)"
@@ -215,10 +266,15 @@ fn passband_gain_48k_to_44k1() {
 fn stopband_attenuation_48k_to_44k1() {
     let quality = Quality::Bit16Better;
     let atten = quality.attenuation();
-    let manager =
-        sinc::Manager::fast_with_sample_rate_quality(48000, 44100, quality, 20000).unwrap();
+    let src = SrcManager::builder()
+        .sample_rate(48000, 44100)
+        .fast()
+        .quality(quality)
+        .pass_freq(20000)
+        .build()
+        .unwrap();
     // Well above the stop edge (halfway from pass to output Nyquist under P1-6).
-    let g = tone_gain_db(&manager, 23500.0, 48000.0, 48000);
+    let g = tone_gain_db(&src, 23500.0, 48000.0, 48000);
     let limit = -(atten - 3.0);
     assert!(
         g <= limit,
@@ -231,8 +287,20 @@ fn generic_matches_fast_bit16() {
     let quality = Quality::Bit16Fast;
     let tw = 0.1;
     let ratio = 2.0;
-    let generic = sinc::Manager::with_quality(ratio, quality, tw).unwrap();
-    let fast = sinc::Manager::fast_with_quality(ratio, quality, tw).unwrap();
+    let generic = SrcManager::builder()
+        .ratio(ratio)
+        .generic()
+        .quality(quality)
+        .trans_width(tw)
+        .build()
+        .unwrap();
+    let fast = SrcManager::builder()
+        .ratio(ratio)
+        .fast()
+        .quality(quality)
+        .trans_width(tw)
+        .build()
+        .unwrap();
     assert_eq!(generic.order(), fast.order());
     let input: Vec<f64> = (0..512)
         .map(|i| (2.0 * PI * i as f64 / 37.0).sin())

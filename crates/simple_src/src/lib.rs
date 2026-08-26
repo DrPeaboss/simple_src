@@ -2,32 +2,28 @@
 //!
 //! ## Usage
 //!
-//! See [sinc] or [linear].
+//! Use [`SrcManager`] to create converters. Select [`Kernel::Linear`] or
+//! [`Kernel::Sinc`] (default). Sinc converters have FIR latency; prefer
+//! [`SrcManager::convert`] for complete buffers, or skip [`SrcManager::latency`]
+//! samples when streaming and call [`Convert::flush`] after the last input.
 //!
-//! Sinc converters have FIR latency. Prefer [`sinc::Manager::convert`] for
-//! complete buffers; for streaming, skip [`sinc::Manager::latency`] samples
-//! at the start and call [`Convert::flush`] after the last input until it
-//! returns 0. Built-in [`sinc`] / [`linear`] converters stop writing once the
-//! delay line is empty; the trait default of [`Convert::flush`] does not.
+//! Float ratios may be reduced to a rational when a continued-fraction fit has
+//! numerator and denominator ≤ 16384 and relative error ≤ `1e-12`. Prefer
+//! [`SrcBuilder::sample_rate`] for exact integer rate pairs such as 44100/48000.
 //!
-//! Float ratios passed to constructors may be reduced to a rational when a
-//! continued-fraction approximation has numerator and denominator ≤ 16384
-//! and relative error ≤ `1e-12`; otherwise the converter uses a floating-point
-//! phase ([`ConvertMode::Float`]). Prefer [`sinc::Manager::with_sample_rate`]
-//! (or integers) when you need an exact rate pair such as 44100/48000.
-//!
-//! Multi-channel audio is N independent mono converters that must stay
-//! frame-aligned. Process planar buffers (one contiguous slice per channel).
-//! [`process_planar`] / [`flush_planar`] keep consume/produce counts in lockstep
-//! and return [`Error`] if channel counts or buffer lengths do not match.
+//! Multi-channel audio uses N independent mono converters. Keep planar buffers
+//! frame-aligned with [`process_planar`] / [`flush_planar`].
 
-pub mod linear;
-pub mod sinc;
-
+mod converter;
 mod engine;
+mod kernel;
+mod manager;
 mod quality;
 mod ratio;
 
+pub use converter::Converter;
+pub use kernel::{Kernel, SincPath};
+pub use manager::{SrcBuilder, SrcManager};
 pub use quality::Quality;
 use ratio::{Ratio, Rational};
 
@@ -128,9 +124,9 @@ pub trait Convert {
     /// [`Self::next_sample`] with zeros until the slice is full or
     /// `next_sample` returns `None`. It does **not** detect an empty delay
     /// line, so custom `Convert` types that rely on this default will keep
-    /// writing for the whole buffer. Built-in [`sinc::Converter`] and
-    /// [`linear::Converter`] override `flush` to stop once their delay line
-    /// is empty (still call until 0 if the buffer was too small).
+    /// writing for the whole buffer. Built-in converters override `flush` to
+    /// stop once their delay line is empty (still call until 0 if the buffer
+    /// was too small).
     fn flush(&mut self, output: &mut [f64]) -> usize
     where
         Self: Sized,
@@ -253,7 +249,7 @@ fn check_equal_channel_lens(
     Ok(())
 }
 
-fn convert_with<C: Convert>(
+pub(crate) fn convert_with<C: Convert>(
     mut converter: C,
     latency: usize,
     ratio: f64,
@@ -267,7 +263,7 @@ fn convert_with<C: Convert>(
         .collect()
 }
 
-fn output_len(ratio: f64, input_len: usize) -> usize {
+pub(crate) fn output_len(ratio: f64, input_len: usize) -> usize {
     (ratio * input_len as f64).round() as usize
 }
 
@@ -373,11 +369,11 @@ impl std::fmt::Display for Error {
             Self::FastUnavailable { ratio, numer } => match numer {
                 Some(numer) => write!(
                     f,
-                    "fast polyphase converter is unavailable for ratio {ratio} (numerator {numer} > 1024); use new/with_quality for generic interpolation"
+                    "fast polyphase converter is unavailable for ratio {ratio} (numerator {numer} > 1024); use SrcBuilder::sinc_path(SincPath::Generic)"
                 ),
                 None => write!(
                     f,
-                    "fast polyphase converter is unavailable for ratio {ratio}; use new/with_quality for generic interpolation"
+                    "fast polyphase converter is unavailable for ratio {ratio}; use SrcBuilder::sinc_path(SincPath::Generic)"
                 ),
             },
         }
@@ -391,6 +387,22 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Kernel;
+
+    #[test]
+    fn with_ratio_is_linear_only() {
+        let linear = SrcManager::with_ratio(2.0).unwrap();
+        assert_eq!(linear.latency(), 0);
+        assert_eq!(linear.order(), None);
+
+        match SrcManager::builder().ratio(2.0).build() {
+            Ok(_) => panic!("sinc builder without filter params should fail"),
+            Err(e) => {
+                let text = e.to_string();
+                assert!(text.contains("missing"), "{text}");
+            }
+        }
+    }
 
     #[test]
     fn error_display() {
@@ -400,7 +412,7 @@ mod tests {
         assert!(text.contains("0"));
         let fast = Error::fast_unavailable(std::f64::consts::PI, None);
         let text = fast.to_string();
-        assert!(text.contains("generic"));
+        assert!(text.contains("Generic"));
         assert!(matches!(
             Error::fast_unavailable(1025.0 / 1024.0, Some(1025)),
             Error::FastUnavailable {
@@ -412,7 +424,7 @@ mod tests {
 
     #[test]
     fn process_block_and_flush_linear() {
-        let manager = linear::Manager::new(2.0).unwrap();
+        let manager = SrcManager::with_ratio(2.0).unwrap();
         let mut cv = manager.converter();
         let input = [1.0, 2.0, 3.0, 4.0];
         let mut output = [0.0; 8];
@@ -430,7 +442,15 @@ mod tests {
 
     #[test]
     fn convert_matches_process_skip() {
-        let manager = sinc::Manager::new(2.0, 48.0, 8, 0.1).unwrap();
+        let manager = SrcManager::builder()
+            .ratio(2.0)
+            .kernel(Kernel::Sinc)
+            .generic()
+            .attenuation(48.0)
+            .quantify(8)
+            .trans_width(0.1)
+            .build()
+            .unwrap();
         let input = [1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0];
         let via_helper = manager.convert(&input);
         let mut cv = manager.converter();
@@ -447,7 +467,7 @@ mod tests {
 
     #[test]
     fn planar_lockstep() {
-        let manager = linear::Manager::new(2.0).unwrap();
+        let manager = SrcManager::with_ratio(2.0).unwrap();
         let mut converters = [manager.converter(), manager.converter()];
         let left = [1.0, 2.0, 3.0, 4.0];
         let right = [4.0, 3.0, 2.0, 1.0];
@@ -469,7 +489,7 @@ mod tests {
 
     #[test]
     fn process_planar_rejects_channel_count_mismatch() {
-        let manager = linear::Manager::new(2.0).unwrap();
+        let manager = SrcManager::with_ratio(2.0).unwrap();
         let mut converters = [manager.converter(), manager.converter()];
         let left = [1.0, 2.0];
         let mut out_l = [0.0; 4];
@@ -489,7 +509,7 @@ mod tests {
 
     #[test]
     fn process_planar_rejects_unequal_input_lens() {
-        let manager = linear::Manager::new(2.0).unwrap();
+        let manager = SrcManager::with_ratio(2.0).unwrap();
         let mut converters = [manager.converter(), manager.converter()];
         let left = [1.0, 2.0, 3.0, 4.0];
         let right = [4.0, 3.0];

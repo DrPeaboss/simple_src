@@ -1,4 +1,4 @@
-use simple_src::{Convert, linear, sinc};
+use simple_src::{Convert, SrcManager};
 
 fn main() {
     divan::main();
@@ -70,7 +70,7 @@ impl Conv {
     sample_count=1000,
 )]
 fn linear_1s(bencher: divan::Bencher, conv: &Conv) {
-    let manager = linear::Manager::new(conv.ratio()).unwrap();
+    let manager = SrcManager::with_ratio(conv.ratio()).unwrap();
     let sample_num = conv.sample_num_10ms() * 100;
     bencher.bench_local(move || {
         let iter = (0..).map(|x| x as f64);
@@ -84,8 +84,15 @@ fn linear_1s(bencher: divan::Bencher, conv: &Conv) {
     name="1. init a96",
     args=[Conv::C44k48k, Conv::C44k96k, Conv::C48k44k, Conv::C48k96k, Conv::C96k44k, Conv::C96k48k]
 )]
-fn init_a96(conv: &Conv) -> sinc::Manager {
-    sinc::Manager::new(conv.ratio(), 96.0, 128, conv.trans_width()).unwrap()
+fn init_a96(conv: &Conv) -> SrcManager {
+    SrcManager::builder()
+        .ratio(conv.ratio())
+        .generic()
+        .attenuation(96.0)
+        .quantify(128)
+        .trans_width(conv.trans_width())
+        .build()
+        .unwrap()
 }
 
 #[divan::bench(
@@ -108,8 +115,15 @@ fn proc_a96_10ms(bencher: divan::Bencher, conv: &Conv) {
     name="2. init a120",
     args=[Conv::C44k48k, Conv::C44k96k, Conv::C48k44k, Conv::C48k96k, Conv::C96k44k, Conv::C96k48k]
 )]
-fn init_a120(conv: &Conv) -> sinc::Manager {
-    sinc::Manager::new(conv.ratio(), 120.0, 512, conv.trans_width()).unwrap()
+fn init_a120(conv: &Conv) -> SrcManager {
+    SrcManager::builder()
+        .ratio(conv.ratio())
+        .generic()
+        .attenuation(120.0)
+        .quantify(512)
+        .trans_width(conv.trans_width())
+        .build()
+        .unwrap()
 }
 
 #[divan::bench(
@@ -132,8 +146,15 @@ fn proc_a120_10ms(bencher: divan::Bencher, conv: &Conv) {
     name="3. init a144",
     args=[Conv::C44k48k, Conv::C44k96k, Conv::C48k44k, Conv::C48k96k, Conv::C96k44k, Conv::C96k48k]
 )]
-fn init_a144(conv: &Conv) -> sinc::Manager {
-    sinc::Manager::new(conv.ratio(), 144.0, 2048, conv.trans_width()).unwrap()
+fn init_a144(conv: &Conv) -> SrcManager {
+    SrcManager::builder()
+        .ratio(conv.ratio())
+        .generic()
+        .attenuation(144.0)
+        .quantify(2048)
+        .trans_width(conv.trans_width())
+        .build()
+        .unwrap()
 }
 
 #[divan::bench(

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use simple_src::{Convert, process_planar, sinc};
+use simple_src::{Convert, Kernel, SincPath, SrcManager, process_planar};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -28,9 +28,13 @@ struct Args {
     #[arg(short, long, default_value_t = 0.95)]
     pass_width: f64,
 
-    /// Use generic half-table interpolation instead of polyphase Fast
+    /// Use generic half-table interpolation instead of polyphase Fast (sinc only)
     #[arg(long)]
     generic: bool,
+
+    /// Conversion kernel: linear or sinc
+    #[arg(long, default_value = "sinc")]
+    kernel: String,
 }
 
 fn main() {
@@ -58,13 +62,14 @@ fn run(args: &Args) -> Result<()> {
     let input_sr = input_spec.sample_rate;
     let output_sr = args.target_rate;
     let output_frames = get_output_frames(reader.duration(), input_sr, output_sr)?;
-    let manager = create_sinc_manager(
+    let manager = create_manager(
         input_sr,
         output_sr,
         args.attenuation,
         args.quantify,
         args.pass_width,
         args.generic,
+        &args.kernel,
     )?;
     let output_spec = hound::WavSpec {
         channels: input_spec.channels,
@@ -265,22 +270,34 @@ fn get_output_frames(input_frames: u32, input_sr: u32, output_sr: u32) -> Result
     Ok(input_frames as u64 * output_sr as u64 / input_sr as u64)
 }
 
-fn create_sinc_manager(
+fn create_manager(
     input_sr: u32,
     output_sr: u32,
     atten: u32,
     quan: u32,
     pass_width: f64,
     generic: bool,
-) -> Result<sinc::Manager> {
-    let builder = sinc::Manager::builder()
-        .sample_rate(input_sr, output_sr)
-        .pass_width(pass_width);
-    let builder = if generic {
-        builder.attenuation(atten).quantify(quan)
-    } else {
-        builder.fast().attenuation(atten)
+    kernel_name: &str,
+) -> Result<SrcManager> {
+    let kernel = match kernel_name {
+        "linear" => Kernel::Linear,
+        "sinc" => Kernel::Sinc,
+        other => bail!("unknown kernel {other}, expected linear or sinc"),
     };
+    let mut builder = SrcManager::builder()
+        .kernel(kernel)
+        .sample_rate(input_sr, output_sr);
+    if kernel == Kernel::Sinc {
+        builder = builder.pass_width(pass_width);
+        builder = if generic {
+            builder
+                .sinc_path(SincPath::Generic)
+                .attenuation(atten)
+                .quantify(quan)
+        } else {
+            builder.sinc_path(SincPath::Fast).attenuation(atten)
+        };
+    }
     builder.build().map_err(|e| {
         anyhow!(
             "failed to initialize SRC converter: {e} (use --generic for half-table interpolation)"

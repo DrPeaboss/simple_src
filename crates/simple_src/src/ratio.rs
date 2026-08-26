@@ -70,11 +70,24 @@ impl Ratio {
         }
     }
 
-    pub fn linear_mode(&self) -> ConvertMode {
+    pub fn polynomial_mode(&self) -> ConvertMode {
         match self {
             Ratio::Float(_) => ConvertMode::Float,
             Ratio::Rational(r) if *r.numer() <= LINEAR_FAST_NUMER_MAX => ConvertMode::RationalFast,
             Ratio::Rational(_) => ConvertMode::Rational,
+        }
+    }
+
+    pub(crate) fn polynomial_phase(&self) -> crate::engine::PhaseAccum {
+        match self {
+            Ratio::Float(ratio) => crate::engine::PhaseAccum::float(ratio.recip()),
+            Ratio::Rational(ratio) => {
+                if *ratio.numer() <= LINEAR_FAST_NUMER_MAX {
+                    crate::engine::PhaseAccum::rational_fast_linear(ratio.recip())
+                } else {
+                    crate::engine::PhaseAccum::rational(ratio.recip())
+                }
+            }
         }
     }
 

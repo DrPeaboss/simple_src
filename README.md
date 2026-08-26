@@ -5,14 +5,14 @@ A simple sample rate conversion lib for audio.
 ## Usage
 
 Use [`SrcManager`] to create converters. Select [`Kernel::Sinc`] (default) for
-high-quality FIR interpolation, or [`Kernel::Linear`] when performance matters
-more than quality.
+high-quality FIR interpolation, [`Kernel::Cubic`] for a faster middle tier, or
+[`Kernel::Linear`] when performance matters most.
 
 Sinc converters have FIR latency. For a complete buffer, call
 [`SrcManager::convert`], which pads zeros and drops the leading delay.
 For streaming, skip [`SrcManager::latency`] samples at the start and call
 [`Convert::flush`] after the last input until it returns 0. Built-in
-sinc/linear converters stop once the delay line is empty (they may still
+sinc/linear/cubic converters stop once the delay line is empty (they may still
 need more than one call if the flush buffer is short). The trait default
 of `Convert::flush` only fills the provided buffer and does not stop on
 an empty delay.
@@ -158,6 +158,28 @@ for s in converter.process(samples.into_iter()) {
 }
 ```
 
+### Cubic (`Kernel::Cubic`)
+
+Catmull-Rom cubic interpolation sits between linear and sinc in quality and
+cost. Like linear, it only needs a ratio (no FIR parameters):
+
+```rust
+use simple_src::{Convert, Kernel, SrcManager};
+
+let samples = vec![1.0, 2.0, 3.0, 4.0];
+
+let manager = SrcManager::builder()
+    .ratio(2.0)
+    .kernel(Kernel::Cubic)
+    .build()
+    .unwrap();
+
+let mut converter = manager.converter();
+for s in converter.process(samples.into_iter()) {
+    println!("{s}");
+}
+```
+
 ## Sinc parameters
 
 Recommended initialization parameters for sinc, also available as
@@ -210,8 +232,8 @@ cargo run -p simple-src-cli -- input.wav -r 48000 -o output.wav
 
 The CLI uses sinc + Fast polyphase interpolation by default. Pass
 `--generic` (and `--quantify` if needed) for half-table interpolation.
-Pass `--kernel linear` for linear interpolation (attenuation and quantify
-are then ignored).
+Pass `--kernel linear` or `--kernel cubic` for ratio-only interpolation
+(attenuation and quantify are then ignored).
 
 ## Plots
 

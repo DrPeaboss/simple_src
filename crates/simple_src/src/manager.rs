@@ -1,5 +1,6 @@
 use crate::converter::Converter;
 use crate::kernel::sinc::builder::Builder as SincBuilder;
+use crate::kernel::spec::KernelSpec;
 use crate::kernel::{Kernel, KernelBackend, SincPath};
 use crate::{ConvertMode, Quality, Result};
 
@@ -73,7 +74,7 @@ impl SrcManager {
         self.backend.mode()
     }
 
-    /// Output latency in samples (zero for linear).
+    /// Output latency in samples (zero for linear and cubic).
     #[inline]
     pub fn latency(&self) -> usize {
         self.backend.latency()
@@ -85,13 +86,13 @@ impl SrcManager {
         self.backend.output_len(input_len)
     }
 
-    /// FIR order for sinc; `None` for linear.
+    /// FIR order for sinc; `None` for linear and cubic.
     #[inline]
     pub fn order(&self) -> Option<u32> {
         self.backend.order()
     }
 
-    /// LUT size for sinc; `None` for linear.
+    /// LUT size for sinc; `None` for linear and cubic.
     #[inline]
     pub fn lut_len(&self) -> Option<usize> {
         self.backend.lut_len()
@@ -106,7 +107,7 @@ impl SrcBuilder {
         self
     }
 
-    /// Select sinc interpolation path. Ignored for [`Kernel::Linear`].
+    /// Select sinc interpolation path. Ignored for [`Kernel::Linear`] and [`Kernel::Cubic`].
     #[inline]
     pub fn sinc_path(mut self, path: SincPath) -> Self {
         self.sinc_path = path;
@@ -211,6 +212,12 @@ impl SrcBuilder {
                 let ratio = self.sinc.resolved_ratio()?;
                 Ok(SrcManager {
                     backend: KernelBackend::linear(ratio),
+                })
+            }
+            Kernel::Cubic => {
+                let ratio = self.sinc.resolved_ratio()?;
+                Ok(SrcManager {
+                    backend: KernelBackend::cubic(ratio),
                 })
             }
             Kernel::Sinc => {

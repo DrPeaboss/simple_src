@@ -1,19 +1,24 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LinearState {
-    Priming,
+    Priming { filled: u8, need: u8 },
     Running,
     Suspended,
 }
 
 impl LinearState {
     #[inline]
-    pub(crate) fn new() -> Self {
-        Self::Priming
+    pub(crate) fn new_linear() -> Self {
+        Self::Priming { filled: 0, need: 1 }
+    }
+
+    #[inline]
+    pub(crate) fn new_cubic() -> Self {
+        Self::Priming { filled: 0, need: 3 }
     }
 
     #[inline]
     pub(crate) fn is_priming(self) -> bool {
-        matches!(self, Self::Priming)
+        matches!(self, Self::Priming { .. })
     }
 
     #[inline]
@@ -23,11 +28,6 @@ impl LinearState {
 
     #[inline]
     pub(crate) fn on_input_resumed(self) -> Self {
-        Self::Running
-    }
-
-    #[inline]
-    pub(crate) fn finish_priming(self) -> Self {
         Self::Running
     }
 }

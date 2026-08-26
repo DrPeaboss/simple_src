@@ -1,9 +1,13 @@
 mod buffer;
+mod fir;
 mod phase;
+mod polynomial;
 mod state;
 
 pub(crate) use buffer::{FirTap, TwoTap};
+pub(crate) use fir::fir_next_sample;
 pub(crate) use phase::PhaseAccum;
+pub(crate) use polynomial::{FourTap, PolynomialKind, polynomial_next_sample};
 pub(crate) use state::{FirState, LinearState};
 
 #[cfg(test)]
@@ -62,7 +66,7 @@ mod tests {
 
     #[test]
     fn linear_state_starts_priming_fir_does_not() {
-        assert!(LinearState::new().is_priming());
+        assert!(LinearState::new_linear().is_priming());
         assert_eq!(FirState::new(), FirState::Running);
     }
 }

@@ -1,32 +1,32 @@
 use crate::{
-    Convert, ConvertMode, Ratio, convert_with, engine::LinearState, engine::PhaseAccum,
-    engine::PolynomialKind, engine::TwoTap, engine::polynomial_next_sample, output_len,
+    Convert, ConvertMode, Ratio, convert_with, engine::FourTap, engine::LinearState,
+    engine::PhaseAccum, engine::PolynomialKind, engine::polynomial_next_sample, output_len,
 };
 
-struct LinearCore {
+struct CubicCore {
     phase: PhaseAccum,
     state: LinearState,
-    taps: TwoTap,
+    taps: FourTap,
 }
 
-impl LinearCore {
+impl CubicCore {
     fn new(phase: PhaseAccum) -> Self {
         Self {
             phase,
-            state: LinearState::new_linear(),
-            taps: TwoTap::new(),
+            state: LinearState::new_cubic(),
+            taps: FourTap::new(),
         }
     }
 }
 
-impl Convert for LinearCore {
+impl Convert for CubicCore {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
         I: Iterator<Item = f64>,
         Self: Sized,
     {
         polynomial_next_sample(
-            PolynomialKind::TwoTap,
+            PolynomialKind::FourTap,
             &mut self.state,
             &mut self.phase,
             &mut self.taps,
@@ -36,7 +36,7 @@ impl Convert for LinearCore {
 }
 
 pub(crate) struct Converter {
-    inner: LinearCore,
+    inner: CubicCore,
 }
 
 impl Converter {
@@ -46,7 +46,7 @@ impl Converter {
 
     pub(crate) fn new(ratio: Ratio) -> Self {
         Self {
-            inner: LinearCore::new(ratio.polynomial_phase()),
+            inner: CubicCore::new(ratio.polynomial_phase()),
         }
     }
 }
@@ -137,37 +137,11 @@ mod tests {
     use crate::Ratio;
 
     #[test]
-    fn ratio_bounds() {
-        let ratio_ok = vec![0.0625, 0.063, 1.0, 15.9, 16.0, 0.123456];
-        for ratio in ratio_ok {
-            assert!(Ratio::try_from_float(ratio).is_ok());
-        }
-        let ratio_err = vec![
-            -1.0,
-            0.0,
-            0.0624,
-            16.01,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-        ];
-        for ratio in ratio_err {
-            assert!(Ratio::try_from_float(ratio).is_err());
-        }
-    }
-
-    #[test]
     fn mode_and_sample_rate() {
         let m = Backend::new(Ratio::try_from_integers(48000, 44100).unwrap());
         assert_eq!(m.mode(), ConvertMode::RationalFast);
-        assert_eq!(m.ratio_parts(), Some((160, 147)));
-        let two = Backend::new(Ratio::try_from_float(2.0).unwrap());
-        assert_eq!(two.mode(), ConvertMode::RationalFast);
-        let generic = Backend::new(Ratio::try_from_integers(20000, 19999).unwrap());
-        assert_eq!(generic.mode(), ConvertMode::Rational);
         let pi = Backend::new(Ratio::try_from_float(std::f64::consts::PI).unwrap());
         assert_eq!(pi.mode(), ConvertMode::Float);
-        assert_eq!(pi.ratio_parts(), None);
     }
 
     #[test]
@@ -175,8 +149,8 @@ mod tests {
         let backend = Backend::new(Ratio::try_from_float(2.0).unwrap());
         let input = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
 
-        let continuous = collect_linear(&backend, &input);
-        let chunked = collect_linear_chunks(&backend, &[&input[..5], &input[5..]]);
+        let continuous = collect_cubic(&backend, &input);
+        let chunked = collect_cubic_chunks(&backend, &[&input[..5], &input[5..]]);
 
         assert_eq!(continuous.len(), chunked.len());
         for (a, b) in continuous.iter().zip(chunked.iter()) {
@@ -184,18 +158,18 @@ mod tests {
         }
     }
 
-    fn collect_linear(backend: &Backend, input: &[f64]) -> Vec<f64> {
+    fn collect_cubic(backend: &Backend, input: &[f64]) -> Vec<f64> {
         let mut converter = backend.converter();
         let mut out = Vec::new();
         let mut iter = input.iter().copied();
         while let Some(sample) = converter.next_sample(&mut iter) {
             out.push(sample);
         }
-        drain_linear_flush(&mut converter, &mut out);
+        drain_flush(&mut converter, &mut out);
         out
     }
 
-    fn collect_linear_chunks(backend: &Backend, chunks: &[&[f64]]) -> Vec<f64> {
+    fn collect_cubic_chunks(backend: &Backend, chunks: &[&[f64]]) -> Vec<f64> {
         let mut converter = backend.converter();
         let mut out = Vec::new();
         for chunk in chunks {
@@ -204,11 +178,11 @@ mod tests {
                 out.push(sample);
             }
         }
-        drain_linear_flush(&mut converter, &mut out);
+        drain_flush(&mut converter, &mut out);
         out
     }
 
-    fn drain_linear_flush(converter: &mut Converter, out: &mut Vec<f64>) {
+    fn drain_flush(converter: &mut Converter, out: &mut Vec<f64>) {
         let mut tail = [0.0; 16];
         loop {
             let n = converter.flush(&mut tail);

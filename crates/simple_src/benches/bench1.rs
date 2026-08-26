@@ -1,4 +1,4 @@
-use simple_src::{Convert, SrcManager};
+use simple_src::{Convert, Kernel, SrcManager};
 
 fn main() {
     divan::main();
@@ -71,6 +71,26 @@ impl Conv {
 )]
 fn linear_1s(bencher: divan::Bencher, conv: &Conv) {
     let manager = SrcManager::with_ratio(conv.ratio()).unwrap();
+    let sample_num = conv.sample_num_10ms() * 100;
+    bencher.bench_local(move || {
+        let iter = (0..).map(|x| x as f64);
+        for s in manager.converter().process(iter).take(sample_num) {
+            divan::black_box(s);
+        }
+    })
+}
+
+#[divan::bench(
+    name="0. cubic 1s",
+    args=[Conv::C44k48k, Conv::C44k96k, Conv::C48k44k, Conv::C48k96k, Conv::C96k44k, Conv::C96k48k],
+    sample_count=1000,
+)]
+fn cubic_1s(bencher: divan::Bencher, conv: &Conv) {
+    let manager = SrcManager::builder()
+        .ratio(conv.ratio())
+        .kernel(Kernel::Cubic)
+        .build()
+        .unwrap();
     let sample_num = conv.sample_num_10ms() * 100;
     bencher.bench_local(move || {
         let iter = (0..).map(|x| x as f64);

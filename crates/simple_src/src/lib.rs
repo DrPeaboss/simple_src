@@ -2,10 +2,11 @@
 //!
 //! ## Usage
 //!
-//! Use [`SrcManager`] to create converters. Select [`Kernel::Linear`] or
-//! [`Kernel::Sinc`] (default). Sinc converters have FIR latency; prefer
-//! [`SrcManager::convert`] for complete buffers, or skip [`SrcManager::latency`]
-//! samples when streaming and call [`Convert::flush`] after the last input.
+//! Use [`SrcManager`] to create converters. Select [`Kernel::Linear`],
+//! [`Kernel::Cubic`], or [`Kernel::Sinc`] (default). Sinc converters have FIR
+//! latency; prefer [`SrcManager::convert`] for complete buffers, or skip
+//! [`SrcManager::latency`] samples when streaming and call [`Convert::flush`]
+//! after the last input.
 //!
 //! Float ratios may be reduced to a rational when a continued-fraction fit has
 //! numerator and denominator ≤ 16384 and relative error ≤ `1e-12`. Prefer

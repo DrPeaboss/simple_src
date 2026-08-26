@@ -52,14 +52,23 @@ impl PhaseAccum {
         }
     }
 
-    /// After the first input sample in linear converters.
+    /// After two-tap priming: advance one input step before the first output.
     #[inline]
-    pub(crate) fn prepare_linear_priming(&mut self) {
+    pub(crate) fn prepare_two_tap_priming(&mut self) {
         match self {
             Self::Float { pos, .. } => *pos = 1.0,
-            Self::Rational { pos, numer, .. } | Self::RationalFast { pos, numer, .. } => {
-                *pos = *numer;
+            Self::Rational { pos, denom, .. } | Self::RationalFast { pos, denom, .. } => {
+                *pos = *denom;
             }
+        }
+    }
+
+    /// After four-tap priming: first output is at phase zero (no input advance).
+    #[inline]
+    pub(crate) fn prepare_four_tap_priming(&mut self) {
+        match self {
+            Self::Float { pos, .. } => *pos = 0.0,
+            Self::Rational { pos, .. } | Self::RationalFast { pos, .. } => *pos = 0,
         }
     }
 

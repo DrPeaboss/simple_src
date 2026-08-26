@@ -32,7 +32,7 @@ struct Args {
     #[arg(long)]
     generic: bool,
 
-    /// Conversion kernel: linear or sinc
+    /// Conversion kernel: linear, cubic, or sinc
     #[arg(long, default_value = "sinc")]
     kernel: String,
 }
@@ -281,8 +281,9 @@ fn create_manager(
 ) -> Result<SrcManager> {
     let kernel = match kernel_name {
         "linear" => Kernel::Linear,
+        "cubic" => Kernel::Cubic,
         "sinc" => Kernel::Sinc,
-        other => bail!("unknown kernel {other}, expected linear or sinc"),
+        other => bail!("unknown kernel {other}, expected linear, cubic, or sinc"),
     };
     let mut builder = SrcManager::builder()
         .kernel(kernel)

@@ -54,6 +54,17 @@ fn linear_dc_gain() {
 }
 
 #[test]
+fn cubic_dc_gain() {
+    let src = simple_src::SrcManager::builder()
+        .ratio(2.0)
+        .kernel(simple_src::Kernel::Cubic)
+        .build()
+        .unwrap();
+    let err = dc_gain_error(&src, 1024);
+    assert!(err < 1e-6, "cubic dc gain err={err}");
+}
+
+#[test]
 fn sinc_dc_gain_high_and_low() {
     // High tier: < 0.001 dB ≈ 1.15e-4 linear.
     for (ratio, quality, tw) in [

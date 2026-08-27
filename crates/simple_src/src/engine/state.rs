@@ -7,11 +7,6 @@ pub(crate) enum LinearState {
 
 impl LinearState {
     #[inline]
-    pub(crate) fn new_linear() -> Self {
-        Self::Priming { filled: 0, need: 1 }
-    }
-
-    #[inline]
     pub(crate) fn new_cubic() -> Self {
         Self::Priming { filled: 0, need: 3 }
     }

@@ -16,6 +16,15 @@ impl Converter {
 }
 
 impl Convert for Converter {
+    /// Batch override: delegate straight to the kernel's batch path so the
+    /// sample loop runs below the kernel dispatch.
+    fn process_block(&mut self, input: &[f64], output: &mut [f64]) -> (usize, usize)
+    where
+        Self: Sized,
+    {
+        self.inner.process_block(input, output)
+    }
+
     #[inline]
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where

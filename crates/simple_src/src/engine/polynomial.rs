@@ -1,4 +1,4 @@
-use super::{LinearState, PhaseAccum, TwoTap};
+use super::{LinearState, PolynomialPhase};
 
 pub(crate) trait PolynomialTap {
     fn push_priming(&mut self, sample: f64);
@@ -6,33 +6,6 @@ pub(crate) trait PolynomialTap {
     fn shift(&mut self, sample: f64);
     fn advance_left(&mut self);
     fn interpolate(&self, coef: f64) -> f64;
-}
-
-impl PolynomialTap for TwoTap {
-    #[inline]
-    fn push_priming(&mut self, sample: f64) {
-        self.set_second(sample);
-    }
-
-    #[inline]
-    fn push_resume(&mut self, sample: f64) {
-        self.set_second(sample);
-    }
-
-    #[inline]
-    fn shift(&mut self, sample: f64) {
-        TwoTap::shift(self, sample);
-    }
-
-    #[inline]
-    fn advance_left(&mut self) {
-        TwoTap::advance_left(self);
-    }
-
-    #[inline]
-    fn interpolate(&self, coef: f64) -> f64 {
-        TwoTap::interpolate(self, coef)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -112,14 +85,14 @@ impl PolynomialTap for FourTap {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PolynomialKind {
-    TwoTap,
     FourTap,
 }
 
-pub(crate) fn polynomial_next_sample<I, T: PolynomialTap>(
+#[inline]
+pub(crate) fn polynomial_next_sample<I, P: PolynomialPhase, T: PolynomialTap>(
     kind: PolynomialKind,
     state: &mut LinearState,
-    phase: &mut PhaseAccum,
+    phase: &mut P,
     taps: &mut T,
     iter: &mut I,
 ) -> Option<f64>
@@ -133,10 +106,8 @@ where
                 taps.push_priming(s);
                 let filled = filled + 1;
                 if filled >= need {
-                    match kind {
-                        PolynomialKind::TwoTap => phase.prepare_two_tap_priming(),
-                        PolynomialKind::FourTap => phase.prepare_four_tap_priming(),
-                    }
+                    let _ = kind;
+                    phase.prepare_four_tap_priming();
                     *state = LinearState::Running;
                 } else {
                     *state = LinearState::Priming { filled, need };
@@ -170,24 +141,16 @@ where
 mod tests {
     use super::*;
     use crate::Rational;
-
-    #[test]
-    fn two_tap_priming_marks_input_advance_pending() {
-        let mut phase = PhaseAccum::rational_fast_linear(Rational::new(1, 2));
-        phase.prepare_two_tap_priming();
-        assert!(phase.needs_input_advance());
-        phase.consume_input_step();
-        assert_eq!(phase.coef(), 0.0);
-    }
+    use crate::engine::{FloatPhase, RationalFastPhase};
 
     #[test]
     fn four_tap_priming_starts_at_phase_zero() {
-        let mut phase = PhaseAccum::rational_fast_linear(Rational::new(1, 2));
+        let mut phase = RationalFastPhase::new(Rational::new(1, 2));
         phase.prepare_four_tap_priming();
         assert!(!phase.needs_input_advance());
         assert_eq!(phase.coef(), 0.0);
 
-        let mut float_phase = PhaseAccum::float(0.5);
+        let mut float_phase = FloatPhase::new(0.5);
         float_phase.prepare_four_tap_priming();
         assert!(!float_phase.needs_input_advance());
         assert_eq!(float_phase.coef(), 0.0);

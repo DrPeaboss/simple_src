@@ -116,9 +116,13 @@ impl KernelSpec for KernelBackend {
 
     fn converter(&self) -> spec::KernelConverter {
         match self {
-            Self::Linear(b) => spec::KernelConverter::Linear(b.converter()),
-            Self::Cubic(b) => spec::KernelConverter::Cubic(b.converter()),
-            Self::Sinc(b) => spec::KernelConverter::Sinc(b.converter()),
+            Self::Linear(b) => b.converter(),
+            Self::Cubic(b) => {
+                spec::KernelConverter::Other(Box::new(spec::OtherKernel::Cubic(b.converter())))
+            }
+            Self::Sinc(b) => {
+                spec::KernelConverter::Other(Box::new(spec::OtherKernel::Sinc(b.converter())))
+            }
         }
     }
 }

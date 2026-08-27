@@ -1,88 +1,223 @@
-use crate::{
-    Convert, ConvertMode, Ratio, convert_with, engine::LinearState, engine::PhaseAccum,
-    engine::PolynomialKind, engine::TwoTap, engine::polynomial_next_sample, output_len,
-};
+use crate::{Convert, ConvertMode, Ratio, Rational, convert_with, output_len};
 
-struct LinearCore {
-    phase: PhaseAccum,
-    state: LinearState,
-    taps: TwoTap,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    First,
+    Normal,
+    Suspend,
 }
 
-impl LinearCore {
-    fn new(phase: PhaseAccum) -> Self {
+/// Float-phase linear core: all state lives in one struct so the hot loop
+/// stays register-resident after inlining.
+pub(crate) struct FloatCore {
+    state: State,
+    last_in: [f64; 2],
+    step: f64,
+    pos: f64,
+}
+
+impl FloatCore {
+    pub(crate) fn new(step: f64) -> Self {
         Self {
-            phase,
-            state: LinearState::new_linear(),
-            taps: TwoTap::new(),
+            state: State::First,
+            last_in: [0.0; 2],
+            step,
+            pos: 0.0,
         }
     }
 }
 
-impl Convert for LinearCore {
+impl Convert for FloatCore {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
         I: Iterator<Item = f64>,
         Self: Sized,
     {
-        polynomial_next_sample(
-            PolynomialKind::TwoTap,
-            &mut self.state,
-            &mut self.phase,
-            &mut self.taps,
-            iter,
-        )
-    }
-}
-
-pub(crate) struct Converter {
-    inner: LinearCore,
-}
-
-impl Converter {
-    fn delay_empty(&self) -> bool {
-        self.inner.state.is_priming() || self.inner.taps.is_empty()
-    }
-
-    pub(crate) fn new(ratio: Ratio) -> Self {
-        Self {
-            inner: LinearCore::new(ratio.polynomial_phase()),
-        }
-    }
-}
-
-impl Convert for Converter {
-    #[inline]
-    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
-    where
-        I: Iterator<Item = f64>,
-        Self: Sized,
-    {
-        self.inner.next_sample(iter)
-    }
-
-    fn flush(&mut self, output: &mut [f64]) -> usize
-    where
-        Self: Sized,
-    {
-        if self.delay_empty() {
-            return 0;
-        }
-        let mut zeros = std::iter::repeat(0.0);
-        let mut produced = 0;
-        while produced < output.len() {
-            match self.next_sample(&mut zeros) {
-                Some(sample) => {
-                    output[produced] = sample;
-                    produced += 1;
-                    if self.delay_empty() {
-                        break;
-                    }
+        loop {
+            match self.state {
+                State::First => {
+                    let s = iter.next()?;
+                    // Aligned start: first output equals the first input.
+                    // Seed both taps with the duplicate; the forced advance
+                    // below replaces the second tap with the next input.
+                    self.last_in = [s, s];
+                    self.pos = 1.0;
+                    self.state = State::Normal;
                 }
-                None => break,
+                State::Normal => {
+                    while self.pos >= 1.0 {
+                        self.pos -= 1.0;
+                        self.last_in[0] = self.last_in[1];
+                        if let Some(s) = iter.next() {
+                            self.last_in[1] = s;
+                        } else {
+                            self.state = State::Suspend;
+                            return None;
+                        }
+                    }
+                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * self.pos;
+                    self.pos += self.step;
+                    return Some(interp);
+                }
+                State::Suspend => {
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.state = State::Normal;
+                }
             }
         }
-        produced
+    }
+}
+
+/// Generic rational-phase linear core (no precomputed coefficient table).
+pub(crate) struct RationalCore {
+    state: State,
+    last_in: [f64; 2],
+    numer: usize,
+    denom: usize,
+    pos: usize,
+    recip: f64,
+}
+
+impl RationalCore {
+    /// `step` is the input-consumption step (the reciprocal of the ratio).
+    pub(crate) fn new(step: Rational) -> Self {
+        let numer = *step.numer() as usize;
+        let denom = *step.denom() as usize;
+        Self {
+            state: State::First,
+            last_in: [0.0; 2],
+            numer,
+            denom,
+            pos: 0,
+            recip: (denom as f64).recip(),
+        }
+    }
+}
+
+impl Convert for RationalCore {
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
+    where
+        I: Iterator<Item = f64>,
+    {
+        loop {
+            match self.state {
+                State::First => {
+                    let s = iter.next()?;
+                    // Aligned start: see FloatCore::First.
+                    self.last_in = [s, s];
+                    self.pos = self.denom;
+                    self.state = State::Normal;
+                }
+                State::Normal => {
+                    while self.pos >= self.denom {
+                        self.pos -= self.denom;
+                        self.last_in[0] = self.last_in[1];
+                        if let Some(s) = iter.next() {
+                            self.last_in[1] = s;
+                        } else {
+                            self.state = State::Suspend;
+                            return None;
+                        }
+                    }
+                    let coef = self.pos as f64 * self.recip;
+                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
+                    self.pos += self.numer;
+                    return Some(interp);
+                }
+                State::Suspend => {
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.state = State::Normal;
+                }
+            }
+        }
+    }
+}
+
+/// Rational-phase linear core with a precomputed fractional coefficient
+/// table; the common case for exact integer rate pairs.
+pub(crate) struct RationalFastCore {
+    state: State,
+    last_in: [f64; 2],
+    numer: usize,
+    denom: usize,
+    pos: usize,
+    coef: Vec<f64>,
+}
+
+impl RationalFastCore {
+    /// `step` is the input-consumption step (the reciprocal of the ratio).
+    pub(crate) fn new(step: Rational) -> Self {
+        let numer = *step.numer() as usize;
+        let denom = *step.denom() as usize;
+        let coef = (0..denom).map(|i| i as f64 / denom as f64).collect();
+        Self {
+            state: State::First,
+            last_in: [0.0; 2],
+            numer,
+            denom,
+            pos: 0,
+            coef,
+        }
+    }
+}
+
+impl Convert for RationalFastCore {
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
+    where
+        I: Iterator<Item = f64>,
+    {
+        loop {
+            match self.state {
+                State::First => {
+                    let s = iter.next()?;
+                    // Aligned start: see FloatCore::First.
+                    self.last_in = [s, s];
+                    self.pos = self.denom;
+                    self.state = State::Normal;
+                }
+                State::Normal => {
+                    while self.pos >= self.denom {
+                        self.pos -= self.denom;
+                        self.last_in[0] = self.last_in[1];
+                        if let Some(s) = iter.next() {
+                            self.last_in[1] = s;
+                        } else {
+                            self.state = State::Suspend;
+                            return None;
+                        }
+                    }
+                    let coef = self.coef[self.pos];
+                    let interp = self.last_in[0] + (self.last_in[1] - self.last_in[0]) * coef;
+                    self.pos += self.numer;
+                    return Some(interp);
+                }
+                State::Suspend => {
+                    let s = iter.next()?;
+                    self.last_in[1] = s;
+                    self.state = State::Normal;
+                }
+            }
+        }
+    }
+}
+
+impl FloatCore {
+    pub(crate) fn delay_empty(&self) -> bool {
+        self.state == State::First || (self.last_in[0] == 0.0 && self.last_in[1] == 0.0)
+    }
+}
+
+impl RationalCore {
+    pub(crate) fn delay_empty(&self) -> bool {
+        self.state == State::First || (self.last_in[0] == 0.0 && self.last_in[1] == 0.0)
+    }
+}
+
+impl RationalFastCore {
+    pub(crate) fn delay_empty(&self) -> bool {
+        self.state == State::First || (self.last_in[0] == 0.0 && self.last_in[1] == 0.0)
     }
 }
 
@@ -97,13 +232,13 @@ impl Backend {
     }
 
     #[inline]
-    pub(crate) fn converter(&self) -> Converter {
-        Converter::new(self.ratio)
+    pub(crate) fn ratio(&self) -> f64 {
+        self.ratio.as_float()
     }
 
     #[inline]
-    pub(crate) fn ratio(&self) -> f64 {
-        self.ratio.as_float()
+    pub(crate) fn ratio_enum(&self) -> Ratio {
+        self.ratio
     }
 
     #[inline]
@@ -127,7 +262,8 @@ impl Backend {
     }
 
     pub(crate) fn convert(&self, input: &[f64]) -> Vec<f64> {
-        convert_with(self.converter(), self.latency(), self.ratio(), input)
+        let converter = crate::kernel::spec::KernelSpec::converter(self);
+        convert_with(converter, self.latency(), self.ratio(), input)
     }
 }
 
@@ -185,7 +321,7 @@ mod tests {
     }
 
     fn collect_linear(backend: &Backend, input: &[f64]) -> Vec<f64> {
-        let mut converter = backend.converter();
+        let mut converter = crate::kernel::spec::KernelSpec::converter(backend);
         let mut out = Vec::new();
         let mut iter = input.iter().copied();
         while let Some(sample) = converter.next_sample(&mut iter) {
@@ -196,7 +332,7 @@ mod tests {
     }
 
     fn collect_linear_chunks(backend: &Backend, chunks: &[&[f64]]) -> Vec<f64> {
-        let mut converter = backend.converter();
+        let mut converter = crate::kernel::spec::KernelSpec::converter(backend);
         let mut out = Vec::new();
         for chunk in chunks {
             let mut iter = chunk.iter().copied();
@@ -208,7 +344,10 @@ mod tests {
         out
     }
 
-    fn drain_linear_flush(converter: &mut Converter, out: &mut Vec<f64>) {
+    fn drain_linear_flush(
+        converter: &mut crate::kernel::spec::KernelConverter,
+        out: &mut Vec<f64>,
+    ) {
         let mut tail = [0.0; 16];
         loop {
             let n = converter.flush(&mut tail);

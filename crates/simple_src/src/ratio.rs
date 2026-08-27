@@ -78,15 +78,14 @@ impl Ratio {
         }
     }
 
-    pub(crate) fn polynomial_phase(&self) -> crate::engine::PhaseAccum {
-        match self {
-            Ratio::Float(ratio) => crate::engine::PhaseAccum::float(ratio.recip()),
-            Ratio::Rational(ratio) => {
-                if *ratio.numer() <= LINEAR_FAST_NUMER_MAX {
-                    crate::engine::PhaseAccum::rational_fast_linear(ratio.recip())
-                } else {
-                    crate::engine::PhaseAccum::rational(ratio.recip())
-                }
+    pub(crate) fn cubic_converter(&self) -> crate::kernel::cubic::Converter {
+        use crate::engine::PhaseFor;
+        use crate::kernel::cubic;
+        match crate::engine::polynomial_phase(self) {
+            PhaseFor::Float(phase) => cubic::Converter::Float(cubic::PolyCore::new(phase)),
+            PhaseFor::Rational(phase) => cubic::Converter::Rational(cubic::PolyCore::new(phase)),
+            PhaseFor::RationalFast(phase) => {
+                cubic::Converter::RationalFast(cubic::PolyCore::new(phase))
             }
         }
     }

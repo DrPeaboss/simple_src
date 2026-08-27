@@ -1,32 +1,44 @@
 use crate::{
-    Convert, ConvertMode, Ratio, convert_with, engine::FourTap, engine::LinearState,
-    engine::PhaseAccum, engine::PolynomialKind, engine::polynomial_next_sample, output_len,
+    Convert, ConvertMode, Ratio, convert_with,
+    engine::{
+        FloatPhase, FourTap, LinearState, PolynomialPhase, RationalFastPhase, RationalPhase,
+        polynomial_next_sample, polynomial_phase,
+    },
+    kernel::spec::drain_flush,
+    output_len,
 };
 
-struct CubicCore {
-    phase: PhaseAccum,
+/// Monomorphic cubic core; the phase mode is fixed at construction so the
+/// hot loop compiles to register-resident code with a single dispatch per
+/// output sample.
+pub(crate) struct PolyCore<P: PolynomialPhase> {
+    phase: P,
     state: LinearState,
     taps: FourTap,
 }
 
-impl CubicCore {
-    fn new(phase: PhaseAccum) -> Self {
+impl<P: PolynomialPhase> PolyCore<P> {
+    pub(crate) fn new(phase: P) -> Self {
         Self {
             phase,
             state: LinearState::new_cubic(),
             taps: FourTap::new(),
         }
     }
+
+    pub(crate) fn delay_empty(&self) -> bool {
+        self.state.is_priming() || self.taps.is_empty()
+    }
 }
 
-impl Convert for CubicCore {
+impl<P: PolynomialPhase> Convert for PolyCore<P> {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
         I: Iterator<Item = f64>,
         Self: Sized,
     {
         polynomial_next_sample(
-            PolynomialKind::FourTap,
+            crate::engine::PolynomialKind::FourTap,
             &mut self.state,
             &mut self.phase,
             &mut self.taps,
@@ -35,20 +47,13 @@ impl Convert for CubicCore {
     }
 }
 
-pub(crate) struct Converter {
-    inner: CubicCore,
-}
-
-impl Converter {
-    fn delay_empty(&self) -> bool {
-        self.inner.state.is_priming() || self.inner.taps.is_empty()
-    }
-
-    pub(crate) fn new(ratio: Ratio) -> Self {
-        Self {
-            inner: CubicCore::new(ratio.polynomial_phase()),
-        }
-    }
+/// Cubic converter: mode-level dispatch nested one level below the kernel
+/// dispatch. Cubic is not on the linear hot path, so the extra match here is
+/// amortized (its per-sample cost is dominated by the Catmull-Rom math).
+pub(crate) enum Converter {
+    Float(PolyCore<FloatPhase>),
+    Rational(PolyCore<RationalPhase>),
+    RationalFast(PolyCore<RationalFastPhase>),
 }
 
 impl Convert for Converter {
@@ -58,31 +63,22 @@ impl Convert for Converter {
         I: Iterator<Item = f64>,
         Self: Sized,
     {
-        self.inner.next_sample(iter)
+        match self {
+            Self::Float(c) => c.next_sample(iter),
+            Self::Rational(c) => c.next_sample(iter),
+            Self::RationalFast(c) => c.next_sample(iter),
+        }
     }
 
     fn flush(&mut self, output: &mut [f64]) -> usize
     where
         Self: Sized,
     {
-        if self.delay_empty() {
-            return 0;
+        match self {
+            Self::Float(c) => drain_flush(c, output),
+            Self::Rational(c) => drain_flush(c, output),
+            Self::RationalFast(c) => drain_flush(c, output),
         }
-        let mut zeros = std::iter::repeat(0.0);
-        let mut produced = 0;
-        while produced < output.len() {
-            match self.next_sample(&mut zeros) {
-                Some(sample) => {
-                    output[produced] = sample;
-                    produced += 1;
-                    if self.delay_empty() {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
-        produced
     }
 }
 
@@ -97,13 +93,23 @@ impl Backend {
     }
 
     #[inline]
-    pub(crate) fn converter(&self) -> Converter {
-        Converter::new(self.ratio)
+    pub(crate) fn ratio(&self) -> f64 {
+        self.ratio.as_float()
     }
 
     #[inline]
-    pub(crate) fn ratio(&self) -> f64 {
-        self.ratio.as_float()
+    pub(crate) fn ratio_enum(&self) -> Ratio {
+        self.ratio
+    }
+
+    #[inline]
+    pub(crate) fn converter(&self) -> Converter {
+        use crate::engine::PhaseFor;
+        match polynomial_phase(&self.ratio) {
+            PhaseFor::Float(phase) => Converter::Float(PolyCore::new(phase)),
+            PhaseFor::Rational(phase) => Converter::Rational(PolyCore::new(phase)),
+            PhaseFor::RationalFast(phase) => Converter::RationalFast(PolyCore::new(phase)),
+        }
     }
 
     #[inline]
@@ -127,7 +133,8 @@ impl Backend {
     }
 
     pub(crate) fn convert(&self, input: &[f64]) -> Vec<f64> {
-        convert_with(self.converter(), self.latency(), self.ratio(), input)
+        let converter = crate::kernel::spec::KernelSpec::converter(self);
+        convert_with(converter, self.latency(), self.ratio(), input)
     }
 }
 
@@ -159,7 +166,7 @@ mod tests {
     }
 
     fn collect_cubic(backend: &Backend, input: &[f64]) -> Vec<f64> {
-        let mut converter = backend.converter();
+        let mut converter = crate::kernel::spec::KernelSpec::converter(backend);
         let mut out = Vec::new();
         let mut iter = input.iter().copied();
         while let Some(sample) = converter.next_sample(&mut iter) {
@@ -170,7 +177,7 @@ mod tests {
     }
 
     fn collect_cubic_chunks(backend: &Backend, chunks: &[&[f64]]) -> Vec<f64> {
-        let mut converter = backend.converter();
+        let mut converter = crate::kernel::spec::KernelSpec::converter(backend);
         let mut out = Vec::new();
         for chunk in chunks {
             let mut iter = chunk.iter().copied();
@@ -182,7 +189,7 @@ mod tests {
         out
     }
 
-    fn drain_flush(converter: &mut Converter, out: &mut Vec<f64>) {
+    fn drain_flush(converter: &mut crate::kernel::spec::KernelConverter, out: &mut Vec<f64>) {
         let mut tail = [0.0; 16];
         loop {
             let n = converter.flush(&mut tail);

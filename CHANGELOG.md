@@ -15,6 +15,12 @@
 - **Breaking:** `with_ratio` / `with_sample_rate` are linear-only; sinc and cubic use the builder.
 - `Ratio::linear_mode` renamed to `polynomial_mode` (used by linear and cubic).
 - Kernels reorganized under `kernel/` (`linear`, `cubic`, `sinc`).
+- Fixed a 3-5x linear (and cubic) interpolation regression introduced by the engine
+  unification: phase accumulators are monomorphic per conversion mode, linear uses
+  dedicated per-mode cores, and `process_block` runs the sample loop below the kernel
+  dispatch (batched) instead of re-entering it per sample.
+- Benches cover the batch path, `convert`, planar stereo, chunked streaming, ratio
+  shapes (float phase, large rational, 16x bounds), and the sinc Fast polyphase path.
 
 ### Quality ladder
 

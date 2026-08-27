@@ -73,9 +73,7 @@ fn main() {
             for (name, input) in [("step", &step), ("impulse", &impulse)] {
                 let out = convert_stream(&mgr, input);
                 let (above, below, wi) = bracket_overshoot(input, &out, ratio);
-                println!(
-                    "  {kernel:?} {name:8} above={above:.6} below={below:.6} worst_idx={wi}"
-                );
+                println!("  {kernel:?} {name:8} above={above:.6} below={below:.6} worst_idx={wi}");
             }
         }
         println!();

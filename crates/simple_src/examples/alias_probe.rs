@@ -30,7 +30,11 @@ fn main() {
                 .build()
                 .unwrap()
         } else {
-            SrcManager::builder().ratio(ratio).kernel(kernel).build().unwrap()
+            SrcManager::builder()
+                .ratio(ratio)
+                .kernel(kernel)
+                .build()
+                .unwrap()
         };
         let out = mgr.convert(&input);
         let body = &out[512..out.len() - 512];

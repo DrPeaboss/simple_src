@@ -60,3 +60,28 @@ def spectrogram(filename):
     fig.colorbar(im, label="Magnitude in dBFS", ticks=np.arange(-200,1,20))
     plt.title(f'Spectrogram of {filename}')
     plt.show()
+
+
+def raw_spectrogram(filename, fs):
+    """Spectrogram of a raw little-endian f64 file (e.g. from the spectral
+    baseline tests in target/tmp/quality/)."""
+    data = np.fromfile(filename, np.float64)
+    N = len(data)
+    window_size = 2048
+    hop = window_size // 2
+    win = kaiser(window_size, 20)
+    SFT = ShortTimeFFT(win, hop, fs, scale_to='magnitude')
+    Sx = SFT.stft(data)
+    fig = plt.figure(figsize=(6, 4))
+    ax = plt.gca()
+    yticks = np.arange(0, fs // 2 + 1, 2000)
+    yticklabels = [f'{int(tick/1000)}' for tick in yticks]
+    ax.set(xlabel='Time in seconds', ylabel='Frequency in kHz',
+        yticks=yticks, yticklabels=yticklabels)
+    im = ax.imshow(20*np.log10(abs(Sx)), origin='lower', aspect='auto',
+                     extent=SFT.extent(N), cmap='inferno',
+                     vmin=-200, vmax=1,
+                     interpolation='sinc')
+    fig.colorbar(im, label="Magnitude in dBFS", ticks=np.arange(-200,1,20))
+    plt.title(f'Spectrogram of {filename}')
+    plt.show()

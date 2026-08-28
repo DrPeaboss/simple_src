@@ -21,6 +21,9 @@
   dispatch (batched) instead of re-entering it per sample.
 - Benches cover the batch path, `convert`, planar stereo, chunked streaming, ratio
   shapes (float phase, large rational, 16x bounds), and the sinc Fast polyphase path.
+- Spectral quality baselines (`tests/spectral`): FFT-based THD+N, max-spur, alias
+  rejection, and passband flatness red lines per kernel, with CSV + SVG spectrum
+  artifacts and a raw sweep for `plots.py` spectrograms.
 
 ### Quality ladder
 

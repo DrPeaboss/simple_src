@@ -33,8 +33,10 @@ impl FirTap {
         self.buf[index]
     }
 
+    /// Contents in tap order (oldest first) as two contiguous slices, split
+    /// where the ring wraps. Feeds the SIMD dot-product kernels.
     #[inline]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = f64> + '_ {
-        self.buf.iter().copied()
+    pub(crate) fn slices(&self) -> (&[f64], &[f64]) {
+        self.buf.as_slices()
     }
 }

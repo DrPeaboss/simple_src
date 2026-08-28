@@ -1,5 +1,7 @@
 pub(crate) mod builder;
+mod dot;
 mod filter;
+use dot::{DotFn, select_dot};
 
 use std::sync::Arc;
 
@@ -86,25 +88,33 @@ struct RationalFastConverter {
     phase: PhaseAccum,
     state: FirState,
     taps: FirTap,
-    lut: Arc<Vec<Vec<f64>>>,
+    /// Flat polyphase table: `phases` rows of `stride` coefficients.
+    lut: Arc<Vec<f64>>,
+    stride: usize,
+    /// Dot-product kernel selected once at build time (AVX2+FMA where
+    /// available, portable auto-vectorized fallback otherwise).
+    dot: DotFn,
 }
 
 impl RationalFastConverter {
-    fn new(step: Rational, order: u32, lut: Arc<Vec<Vec<f64>>>) -> Self {
+    fn new(step: Rational, order: u32, lut: Arc<Vec<f64>>, dot: DotFn) -> Self {
         Self {
             phase: PhaseAccum::rational(step),
             state: FirState::new(),
             taps: FirTap::new((order + 1) as usize),
+            stride: order as usize + 1,
             lut,
+            dot,
         }
     }
 
-    fn interpolate(phase: &PhaseAccum, taps: &FirTap, lut: &[Vec<f64>]) -> f64 {
-        lut[phase.pos_usize()]
-            .iter()
-            .zip(taps.iter())
-            .map(|(h, s)| h * s)
-            .sum()
+    /// One output sample from the current phase; `pos` must be `< phases`.
+    #[inline]
+    fn interpolate(&self, pos: usize) -> f64 {
+        let (tap_a, tap_b) = self.taps.slices();
+        let row = &self.lut[pos * self.stride..(pos + 1) * self.stride];
+        // SAFETY: `self.dot` was selected by `select_dot` for this CPU.
+        unsafe { (self.dot)(tap_a, &row[..tap_a.len()]) + (self.dot)(tap_b, &row[tap_a.len()..]) }
     }
 }
 
@@ -136,6 +146,69 @@ impl Convert for GenericFirConverter {
     }
 }
 
+impl RationalFastConverter {
+    /// Streaming batch loop for the Running state: the phase arithmetic is
+    /// monomorphic (no `PhaseAccum` enum dispatch per output) and each output
+    /// is one dot-kernel call. Semantics are bit-identical to `next_sample`
+    /// (same state transitions, same operation order).
+    pub(crate) fn process_block(&mut self, input: &[f64], output: &mut [f64]) -> (usize, usize) {
+        if output.is_empty() {
+            // Matches the shared per-sample batch helper: nothing requested,
+            // nothing consumed.
+            return (0, 0);
+        }
+        let mut iter = crate::SliceIter {
+            data: input,
+            pos: 0,
+        };
+        let mut produced = 0;
+        // Resume from a previous input-exhausted suspension with the same
+        // behavior as `fir_next_sample`: shift one input sample, then fall
+        // through to the Running loop.
+        if matches!(self.state, FirState::Suspended) {
+            match iter.next() {
+                Some(s) => {
+                    self.taps.shift(s);
+                    self.state = FirState::Running;
+                }
+                None => return (iter.pos, produced),
+            }
+        }
+        // Running state: copy the phase fields out and run a tight,
+        // monomorphic loop (no `PhaseAccum` dispatch per output sample).
+        let PhaseAccum::Rational { pos, numer, denom } = &mut self.phase else {
+            unreachable!("fast sinc uses the Rational phase");
+        };
+        let (mut pos, numer, denom) = (*pos, *numer, *denom);
+        while produced < output.len() {
+            while pos >= denom {
+                pos -= denom;
+                match iter.next() {
+                    Some(s) => self.taps.shift(s),
+                    None => {
+                        self.state = FirState::Suspended;
+                        *pos_ref(&mut self.phase) = pos;
+                        return (iter.pos, produced);
+                    }
+                }
+            }
+            output[produced] = self.interpolate(pos);
+            produced += 1;
+            pos += numer;
+        }
+        *pos_ref(&mut self.phase) = pos;
+        (iter.pos, produced)
+    }
+}
+
+#[inline]
+fn pos_ref(phase: &mut PhaseAccum) -> &mut usize {
+    match phase {
+        PhaseAccum::Rational { pos, .. } => pos,
+        _ => unreachable!("fast sinc uses the Rational phase"),
+    }
+}
+
 impl Convert for RationalFastConverter {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
@@ -143,12 +216,20 @@ impl Convert for RationalFastConverter {
         Self: Sized,
     {
         let lut = &self.lut;
+        let stride = self.stride;
+        let dot = self.dot;
         fir_next_sample(
             &mut self.state,
             &mut self.phase,
             &mut self.taps,
             iter,
-            |phase, taps| Self::interpolate(phase, taps, lut),
+            |phase, taps| {
+                let (tap_a, tap_b) = taps.slices();
+                let pos = phase.pos_usize();
+                let row = &lut[pos * stride..(pos + 1) * stride];
+                // SAFETY: `dot` was selected by `select_dot` for this CPU.
+                unsafe { dot(tap_a, &row[..tap_a.len()]) + dot(tap_b, &row[tap_a.len()..]) }
+            },
         )
     }
 }
@@ -158,6 +239,18 @@ impl Converter {
         match &self.inner {
             ConverterKind::Generic(c) => c.taps.is_empty(),
             ConverterKind::Fast(c) => c.taps.is_empty(),
+        }
+    }
+
+    /// Batch override: the Fast path runs a dedicated monomorphic loop; the
+    /// Generic path keeps the shared per-sample batch helper.
+    pub(crate) fn process_block(&mut self, input: &[f64], output: &mut [f64]) -> (usize, usize)
+    where
+        Self: Sized,
+    {
+        match &mut self.inner {
+            ConverterKind::Fast(c) => c.process_block(input, output),
+            ConverterKind::Generic(c) => crate::kernel::spec::batch(c, input, output),
         }
     }
 }
@@ -225,7 +318,8 @@ fn trans_width_from_pass_freq(old_sr: u32, new_sr: u32, pass_freq: u32) -> f64 {
 #[derive(Clone)]
 enum Lut {
     Generic(Arc<Vec<f64>>),
-    Fast(Arc<Vec<Vec<f64>>>),
+    /// Flat polyphase table: `phases` rows of `(order + 1)` coefficients.
+    Fast(Arc<Vec<f64>>),
 }
 
 #[derive(Clone)]
@@ -398,7 +492,7 @@ impl Backend {
                 ))
             }
             (Ratio::Rational(ratio), Lut::Fast(lut)) => ConverterKind::Fast(
-                RationalFastConverter::new(ratio.recip(), self.order, lut.clone()),
+                RationalFastConverter::new(ratio.recip(), self.order, lut.clone(), select_dot()),
             ),
             _ => unreachable!("LUT kind must match ratio representation"),
         };
@@ -461,7 +555,7 @@ impl Backend {
     pub(crate) fn lut_len(&self) -> usize {
         match &self.lut {
             Lut::Generic(filter) => filter.len(),
-            Lut::Fast(lut) => lut.len() * (self.order as usize + 1),
+            Lut::Fast(lut) => lut.len(),
         }
     }
 
@@ -834,6 +928,77 @@ mod tests {
             (odd_dc - even_dc).abs() < 0.02,
             "odd dc {odd_dc} vs even dc {even_dc}"
         );
+    }
+
+    /// process_block (batch loop) must be bit-identical to the per-sample
+    /// iterator path when both use the same dot kernel.
+    #[test]
+    fn fast_batch_matches_iterator_bitwise() {
+        for (old_sr, new_sr) in [(44100u32, 48000u32), (48000, 44100), (48000, 96000)] {
+            let mgr = crate::SrcManager::builder()
+                .sample_rate(old_sr, new_sr)
+                .fast()
+                .quality(crate::Quality::Bit16Fast)
+                .trans_width(0.05)
+                .build()
+                .unwrap();
+            let input: Vec<f64> = (0..5000)
+                .map(|i| ((i as f64) * 0.013).sin() + 0.3 * ((i as f64) * 0.107).cos())
+                .collect();
+
+            // iterator path, one sample at a time
+            let mut cv = mgr.converter();
+            let iter_out: Vec<f64> = cv
+                .process(input.iter().copied())
+                .take(mgr.output_len(input.len()))
+                .collect();
+
+            // batch path, 10ms-ish chunks with a final flush drain
+            let mut cv = mgr.converter();
+            let mut batch_out = Vec::new();
+            let mut pos = 0;
+            let mut buf = vec![0.0f64; 1024];
+            while pos < input.len() {
+                let (consumed, produced) = cv.process_block(&input[pos..], &mut buf);
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+                pos += consumed;
+                batch_out.extend_from_slice(&buf[..produced]);
+            }
+            let mut tail = vec![0.0f64; 8192];
+            loop {
+                let n = cv.flush(&mut tail);
+                if n == 0 {
+                    break;
+                }
+                batch_out.extend_from_slice(&tail[..n]);
+            }
+
+            // convert() drops latency; drop it from the streaming paths too
+            let lat = mgr.latency();
+            let iter_cmp = &iter_out[lat.min(iter_out.len())..];
+            let batch_cmp = &batch_out[lat.min(batch_out.len())..];
+            let n = iter_cmp.len().min(batch_cmp.len());
+            assert!(
+                iter_cmp[..n] == batch_cmp[..n],
+                "batch vs iterator mismatch for {old_sr}->{new_sr}"
+            );
+        }
+    }
+
+    /// The flat LUT must still report the expected phase count.
+    #[test]
+    fn fast_lut_len_is_phase_count() {
+        let mgr = crate::SrcManager::builder()
+            .sample_rate(44100, 48000)
+            .fast()
+            .quality(crate::Quality::Bit16Fast)
+            .trans_width(0.05)
+            .build()
+            .unwrap();
+        let order = mgr.order().unwrap() as usize;
+        assert_eq!(mgr.lut_len().unwrap(), 160 * (order + 1));
     }
 
     #[test]

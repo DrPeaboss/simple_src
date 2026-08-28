@@ -19,6 +19,11 @@
   unification: phase accumulators are monomorphic per conversion mode, linear uses
   dedicated per-mode cores, and `process_block` runs the sample loop below the kernel
   dispatch (batched) instead of re-entering it per sample.
+- ~3x faster sinc Fast (polyphase) path: the LUT is stored flat, the FIR delay line
+  feeds contiguous slices, an AVX2+FMA dot-product kernel (runtime-detected once per
+  converter, portable auto-vectorized fallback, x86_64) replaces the per-tap zip, and
+  `process_block` runs a monomorphic phase loop with no per-sample dispatch. a96
+  44100->48000 batch: 31.8 us -> 10.0 us per 10 ms; quality baselines unchanged.
 - Benches cover the batch path, `convert`, planar stereo, chunked streaming, ratio
   shapes (float phase, large rational, 16x bounds), and the sinc Fast polyphase path.
 - Spectral quality baselines (`tests/spectral`): FFT-based THD+N, max-spur, alias

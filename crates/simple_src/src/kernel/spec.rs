@@ -16,7 +16,11 @@ pub(crate) trait Delayed: Convert {
 /// with an indirect jump table, which defeats register promotion of the
 /// converter state and costs ~2x on the batch path.
 #[inline(never)]
-fn batch<C: Convert>(converter: &mut C, input: &[f64], output: &mut [f64]) -> (usize, usize) {
+pub(crate) fn batch<C: Convert>(
+    converter: &mut C,
+    input: &[f64],
+    output: &mut [f64],
+) -> (usize, usize) {
     let mut iter = crate::SliceIter {
         data: input,
         pos: 0,
@@ -96,7 +100,7 @@ impl Convert for OtherKernel {
     {
         match self {
             Self::Cubic(c) => batch(c, input, output),
-            Self::Sinc(c) => batch(c, input, output),
+            Self::Sinc(c) => c.process_block(input, output),
         }
     }
 

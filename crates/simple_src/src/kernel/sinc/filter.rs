@@ -76,15 +76,20 @@ pub(crate) fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f6
     filter
 }
 
+/// Flat polyphase table: `len` rows of `order + 1` coefficients stored
+/// contiguously (row `i` at `data[i * (order + 1) .. (i + 1) * (order + 1)]`).
+/// The flat layout gives the dot-product kernels one contiguous load per row
+/// instead of chasing per-row heap allocations.
 #[inline]
-pub(crate) fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) -> Vec<Vec<f64>> {
-    let mut lut = Vec::with_capacity(len);
+pub(crate) fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) -> Vec<f64> {
+    let stride = order as usize + 1;
+    let mut lut = Vec::with_capacity(len * stride);
     let i0_beta = bessel_i0(beta);
     let half_order = order as f64 * 0.5;
     let taps = order + 1;
     for i in 0..len {
         let pos = i as f64 / len as f64;
-        let mut coef_pos = Vec::with_capacity(taps as usize);
+        let mut coef_pos = Vec::with_capacity(stride);
         for j in (0..taps).rev() {
             let pos = pos + j as f64 - half_order;
             coef_pos.push(windowed_sinc(pos, half_order, beta, i0_beta, cutoff));
@@ -96,7 +101,7 @@ pub(crate) fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) 
                 *c *= inv;
             }
         }
-        lut.push(coef_pos);
+        lut.extend_from_slice(&coef_pos);
     }
     lut
 }

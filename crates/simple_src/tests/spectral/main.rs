@@ -324,6 +324,124 @@ fn passband_flatness_baseline() {
 }
 
 // ---------------------------------------------------------------------------
+// Measured-trim filter design baseline (opt-in via `SrcBuilder::trim_filter`)
+// ---------------------------------------------------------------------------
+
+/// End-to-end worst-case stopband readout for 48 -> 44.1 with `TW = 0.05`
+/// (stopband edge 21.5 kHz): convert single stopband tones on a dense grid
+/// (the worst lobe sits just past the stop edge and is narrow, ~1/order) and
+/// measure the attenuated (or folded) residue. Tone level is -6 dBFS, so
+/// `residue ~= -6 dB + |H(f)|` directly reads the realized stopband.
+fn trim_alias_case(atten: f64, trimmed: bool) -> (f64, u32, u128) {
+    // Dense grid across the first stopband lobes (21550..22100) plus deeper
+    // points; 25 Hz spacing resolves the ~85 Hz-wide first lobe at order ~300.
+    let mut tones: Vec<f64> = (21_500i32..=22_100).step_by(25).map(|f| f as f64).collect();
+    tones.extend_from_slice(&[23_000.0, 23_700.0]);
+    let mut b = SrcManager::builder()
+        .sample_rate(48000, 44100)
+        .attenuation(atten)
+        .trans_width(TW)
+        .fast();
+    b = if trimmed { b.trim_filter(true) } else { b };
+    let t0 = std::time::Instant::now();
+    let m = b.build().unwrap();
+    let build_ms = t0.elapsed().as_millis();
+    let order = m.order().unwrap();
+    let input_len = input_len_for(48000.0, 44100.0);
+    let mut worst = f64::NEG_INFINITY;
+    for &f in &tones {
+        let (ft, input) = binned_tone(48000.0, 48000.0, f, TONE_AMP, input_len);
+        let out = m.convert(&input);
+        let core = &out[EDGE_TRIM..EDGE_TRIM + FFT_N];
+        let (db, bin_hz) = spectrum_db(core, 44100.0);
+        // Above the 44.1 kHz output Nyquist the tone folds to 44100 - f.
+        let out_f = if ft > 22050.0 { 44100.0 - ft } else { ft };
+        // The time-varying polyphase branches spread the worst-branch
+        // response into sidebands spaced fs_out/160 = 275.6 Hz; include a
+        // few of them, otherwise the peak reads only the branch average.
+        let sb = 44100.0 / 160.0;
+        let (residue, at) = peak_in(&db, bin_hz, out_f - 2.2 * sb, out_f + 2.2 * sb);
+        if std::env::var("TRIM_DEBUG").is_ok() {
+            println!(
+                "  tone {ft:>9.2} -> out {out_f:>9.2}: residue {residue:>8.2} dBFS at {at:>9.2} Hz"
+            );
+        }
+        worst = worst.max(residue);
+    }
+    (worst, order, build_ms)
+}
+
+/// Measured-trim baseline. Pinned release-mode measurements (48 -> 44.1,
+/// pass-band tones sweep, worst stopband residue; tone at -6 dBFS so
+/// `residue ~= -6 dB + |H|`):
+///
+/// | atten | design  | order | worst alias dBFS |
+/// |-------|---------|-------|------------------|
+/// | 96    | formula | 286   | -103.64          |
+/// | 96    | trimmed | 268   | -102.16          |
+/// | 120   | formula | 358   | -127.85          |
+/// | 120   | trimmed | 344   | -128.66          |
+/// | 144   | formula | 432   | -150.74          |
+/// | 144   | trimmed | 414   | -150.59          |
+///
+/// The trimmed design saves 14-18 taps at identical end-to-end rejection;
+/// trimmed passband flatness measures 0.00 dB worst-case (same as formula).
+#[test]
+fn trimmed_design_baseline() {
+    println!(
+        "\n{:>8} {:>8} {:>14} {:>14} {:>10}",
+        "atten", "design", "order", "worst alias", "resid-atten"
+    );
+    for atten in [96.0f64, 120.0, 144.0] {
+        let (plain_res, plain_order, _plain_ms) = trim_alias_case(atten, false);
+        let (trim_res, trim_order, _trim_ms) = trim_alias_case(atten, true);
+        println!(
+            "{:>8.0} {:>8} {:>14} {:>14.2} {:>10.2}",
+            atten,
+            "formula",
+            plain_order,
+            plain_res,
+            plain_res - (-atten)
+        );
+        println!(
+            "{:>8.0} {:>8} {:>14} {:>14.2} {:>10.2}",
+            atten,
+            "trimmed",
+            trim_order,
+            trim_res,
+            trim_res - (-atten)
+        );
+        // The trimmed design must meet the requested stopband on every
+        // polyphase branch: residue <= tone(-6 dBFS) - atten (+ slack).
+        assert!(
+            trim_res < -atten - 4.0,
+            "trimmed design misses spec at {atten}: {trim_res:.2} dBFS"
+        );
+        // The trim must not blow up the order to buy compliance.
+        assert!(
+            trim_order <= plain_order + 16,
+            "trimmed order {} >> formula order {}",
+            trim_order,
+            plain_order
+        );
+    }
+
+    // Passband must be unaffected: same flatness limits as the baseline.
+    let trimmed_flat = SrcManager::builder()
+        .sample_rate(44100, 48000)
+        .quality(Quality::Bit16Fast)
+        .trans_width(TW)
+        .fast()
+        .trim_filter(true)
+        .build()
+        .unwrap();
+    let errs = flatness_case(&trimmed_flat, "trim_trim_flat");
+    let worst = errs.iter().fold(0.0f64, |a, &e| a.max(e.abs()));
+    println!("trimmed flatness worst: {worst:.2} dB");
+    assert!(worst < 0.2, "trimmed flatness {worst:.2} dB exceeds 0.2 dB");
+}
+
+// ---------------------------------------------------------------------------
 // Sweep artifact for spectrogram visualization via plots.py
 // ---------------------------------------------------------------------------
 

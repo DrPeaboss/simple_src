@@ -32,6 +32,9 @@ pub(crate) struct Builder {
     new_sr: Option<u32>,
     pass_freq: Option<u32>,
     use_fast: bool,
+    /// Measure-and-trim the Kaiser design at build time (see
+    /// `filter::trim_design`).
+    trim: bool,
 }
 
 impl Builder {
@@ -132,6 +135,16 @@ impl Builder {
         self
     }
 
+    /// Replace the `+6 dB` order margin and the approximate Kaiser
+    /// beta mapping with an init-time search that measures the realized
+    /// stopband of the worst polyphase branch and picks the smallest order
+    /// that meets `attenuation` exactly. Applies only to the
+    /// attenuation-based constructors.
+    pub(crate) fn trimmed(mut self, enable: bool) -> Self {
+        self.trim = enable;
+        self
+    }
+
     pub(crate) fn resolved_ratio(&self) -> Result<Ratio> {
         self.ratio_error.clone().map_or(Ok(()), Err)?;
         match (self.ratio, self.old_sr, self.new_sr) {
@@ -193,13 +206,21 @@ impl Builder {
                 super::Backend::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
             }
             (_, _, _, Some(atten), Some(trans_width), _, _, _) => {
-                super::Backend::new_internal(ratio, atten, quan, trans_width)
+                if self.trim {
+                    super::Backend::trimmed_new_internal(ratio, atten, quan, trans_width)
+                } else {
+                    super::Backend::new_internal(ratio, atten, quan, trans_width)
+                }
             }
             (Some(order), _, _, Some(atten), _, _, _, _) => {
                 super::Backend::with_order_internal(ratio, atten, quan, order)
             }
             (_, _, _, Some(atten), _, Some(old_sr), Some(new_sr), Some(pass_freq)) => {
-                super::Backend::with_sample_rate(old_sr, new_sr, atten, quan, pass_freq)
+                if self.trim {
+                    super::Backend::trimmed_with_sample_rate(old_sr, new_sr, atten, quan, pass_freq)
+                } else {
+                    super::Backend::with_sample_rate(old_sr, new_sr, atten, quan, pass_freq)
+                }
             }
             _ => Err(Error::missing(
                 "attenuation with trans_width/order/pass_freq, or raw cutoff",
@@ -224,13 +245,21 @@ impl Builder {
                 super::Backend::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
             }
             (_, _, _, Some(atten), Some(trans_width), _, _, _) => {
-                super::Backend::fast_new_internal(ratio, atten, trans_width)
+                if self.trim {
+                    super::Backend::fast_trimmed_new_internal(ratio, atten, trans_width)
+                } else {
+                    super::Backend::fast_new_internal(ratio, atten, trans_width)
+                }
             }
             (Some(order), _, _, Some(atten), _, _, _, _) => {
                 super::Backend::fast_with_order_internal(ratio, atten, order)
             }
             (_, _, _, Some(atten), _, Some(old_sr), Some(new_sr), Some(pass_freq)) => {
-                super::Backend::fast_with_sample_rate(old_sr, new_sr, atten, pass_freq)
+                if self.trim {
+                    super::Backend::fast_trimmed_with_sample_rate(old_sr, new_sr, atten, pass_freq)
+                } else {
+                    super::Backend::fast_with_sample_rate(old_sr, new_sr, atten, pass_freq)
+                }
             }
             _ => Err(Error::missing(
                 "attenuation with trans_width/order/pass_freq, or raw cutoff",

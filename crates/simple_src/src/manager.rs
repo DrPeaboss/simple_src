@@ -215,6 +215,26 @@ impl SrcBuilder {
         self
     }
 
+    /// Enable the measured-trim filter design (sinc only, experimental).
+    ///
+    /// Instead of the fixed *A + 6 dB* order margin and the approximate Kaiser
+    /// beta mapping, the builder measures the realized stopband of the worst
+    /// polyphase branch at init time and searches for the smallest even order
+    /// that meets `attenuation` exactly.
+    ///
+    /// Costs 8–54 ms of extra init time depending on ratio/attenuation; the
+    /// result is guaranteed to meet the requested stopband (on the measured
+    /// branches) or the constructor falls back to the formula design. Order
+    /// choices can differ by a tap or two across libm implementations at
+    /// borderline specs; each platform's design meets the spec per its own
+    /// measurement. Applies only to the attenuation-based constructors and is
+    /// honored on Fast/Auto whenever the fast path is eligible.
+    #[inline]
+    pub fn trim_filter(mut self, enable: bool) -> Self {
+        self.sinc = self.sinc.trimmed(enable);
+        self
+    }
+
     /// Build the manager.
     pub fn build(self) -> Result<SrcManager> {
         match self.kernel {

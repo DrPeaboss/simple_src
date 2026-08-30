@@ -74,6 +74,38 @@ polyphase interpolation precomputes one tap set per rational phase; it
 requires a rational ratio whose reduced numerator is ≤ 1024, does not take
 `quantify`, and returns [`Error::FastUnavailable`] otherwise.
 
+#### Choosing between Generic and Fast
+
+Both paths use the same filter order (identical latency and per-sample cost);
+they differ in table size. Generic stores `(quantify + 1) × (order + 1)`
+coefficients, Fast stores `numerator × (order + 1)`, where `numerator` is the
+reduced ratio numerator. So:
+
+- **Fast wins on memory when `numerator ≤ quantify`** — dramatically so for
+  integer ratios (2x, 3x, …), which is what the default `Auto` path picks.
+- **Generic wins on memory when `numerator > quantify + 1`**, by a factor of
+  `numerator / (quantify + 1)`. This is the low-memory / moderate-precision
+  niche: large fractional ratios at low quality tiers. Generic also covers
+  arbitrary float ratios (π, √2, …) where Fast is unavailable entirely.
+
+Measured with `pass_freq(20000)` (`Generic KiB / Fast KiB` per quality tier):
+
+|            | 44.1→48: | 48→44.1: | 44.1→96: | 96→44.1: |
+| ---------- | -------: | -------: | -------: | -------: |
+| Bit8Fast   |   5 / 89 |   5 / 88 |    5 / 178 |  11 / 176 |
+| Bit16Fast  | 144 / 179 | 156 / 178 | 144 / 358 | 311 / 355 |
+| Bit24Fast  | 3442 / 269 | 3730 / 268 | 3442 / 538 | 7444 / 534 |
+
+(Bit16Fast 44.1→48 is near the crossover: 129 vs 160 rows. Full rule of thumb:
+Generic saves `numerator / (quantify + 1)` when that value exceeds 1.)
+
+The memory saving costs a little passband ripple: Generic interpolates the
+kernel between adjacent `quantify` phase rows, which adds ripple near the top
+of the passband (`≈ 0.15 dB` at `quantify = 8`, matching Fast from
+`quantify ≥ 16` up). Stop-band attenuation is unaffected — the phase
+interpolation error scales with the local response and vanishes where `H(ω)`
+is already zero. Latency and per-sample cost are identical between the paths.
+
 Typical 44100/48000 conversion:
 
 ```rust
@@ -223,6 +255,14 @@ Generic-only (ignored on Fast or Auto when Fast is selected).
   inside the transition.
 - **Coefficients:** Fast phases and the Generic half-table are scaled for
   unity DC gain.
+- **Measured trim (experimental):** `.trim_filter(true)` replaces the fixed
+  *A + 6 dB* order margin and the approximate Kaiser beta mapping with an
+  init-time search that measures the realized stopband of the worst polyphase
+  branch and picks the smallest even order meeting the requested attenuation
+  exactly. Saves ~4–6% taps (order = per-sample cost) at the same guaranteed
+  stopband; costs 8–54 ms of extra init time (ratio/attenuation dependent)
+  and falls back to the formula design if the search cannot converge within
+  the order cap.
 
 ## CLI
 

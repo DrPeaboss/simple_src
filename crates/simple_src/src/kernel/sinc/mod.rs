@@ -455,6 +455,32 @@ impl Backend {
         Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
     }
 
+    /// Measured-trim variant of [`Self::new_internal`]: replaces the
+    /// `+6 dB` order margin and the approximate beta mapping with a search
+    /// for the smallest order whose worst polyphase branch meets the
+    /// requested stopband. Falls back to the formula design when the search
+    /// cannot converge within `MAX_ORDER`.
+    pub(crate) fn trimmed_new_internal(
+        ratio: Ratio,
+        atten: f64,
+        quan: u32,
+        trans_width: f64,
+    ) -> Result<Self> {
+        check_f64("attenuation", atten, MIN_ATTEN, MAX_ATTEN)?;
+        check_u32("quantify", quan, MIN_QUAN, MAX_QUAN)?;
+        check_f64("trans_width", trans_width, 0.01, 1.0)?;
+        let fratio = ratio.as_float();
+        let cutoff = design_cutoff(fratio, trans_width);
+        let (order, kaiser_beta) = match trim_design(fratio, atten, trans_width) {
+            Some(design) => design,
+            None => (
+                calc_order(fratio, atten, trans_width),
+                calc_kaiser_beta(atten),
+            ),
+        };
+        Self::with_raw_internal(ratio, quan, order, kaiser_beta, cutoff)
+    }
+
     pub(crate) fn with_order_internal(
         ratio: Ratio,
         atten: f64,
@@ -479,6 +505,27 @@ impl Backend {
         let fratio = ratio.as_float();
         let order = calc_order(fratio, atten, trans_width);
         let cutoff = design_cutoff(fratio, trans_width);
+        Self::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
+    }
+
+    /// Measured-trim variant of [`Self::fast_new_internal`].
+    pub(crate) fn fast_trimmed_new_internal(
+        ratio: Ratio,
+        atten: f64,
+        trans_width: f64,
+    ) -> Result<Self> {
+        check_f64("attenuation", atten, MIN_ATTEN, MAX_ATTEN)?;
+        check_f64("trans_width", trans_width, 0.01, 1.0)?;
+        let rational = ratio.require_fast()?;
+        let fratio = ratio.as_float();
+        let cutoff = design_cutoff(fratio, trans_width);
+        let (order, kaiser_beta) = match trim_design(fratio, atten, trans_width) {
+            Some(design) => design,
+            None => (
+                calc_order(fratio, atten, trans_width),
+                calc_kaiser_beta(atten),
+            ),
+        };
         Self::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
     }
 
@@ -515,6 +562,33 @@ impl Backend {
         let ratio = Ratio::try_from_integers(new_sr, old_sr)?;
         let trans_width = trans_width_from_pass_freq(old_sr, new_sr, pass_freq);
         Self::new_internal(ratio, atten, quan, trans_width)
+    }
+
+    /// Measured-trim variant of [`Self::with_sample_rate`].
+    #[inline]
+    pub(crate) fn trimmed_with_sample_rate(
+        old_sr: u32,
+        new_sr: u32,
+        atten: f64,
+        quan: u32,
+        pass_freq: u32,
+    ) -> Result<Self> {
+        let ratio = Ratio::try_from_integers(new_sr, old_sr)?;
+        let trans_width = trans_width_from_pass_freq(old_sr, new_sr, pass_freq);
+        Self::trimmed_new_internal(ratio, atten, quan, trans_width)
+    }
+
+    /// Measured-trim variant of [`Self::fast_with_sample_rate`].
+    #[inline]
+    pub(crate) fn fast_trimmed_with_sample_rate(
+        old_sr: u32,
+        new_sr: u32,
+        atten: f64,
+        pass_freq: u32,
+    ) -> Result<Self> {
+        let ratio = Ratio::try_from_integers(new_sr, old_sr)?;
+        let trans_width = trans_width_from_pass_freq(old_sr, new_sr, pass_freq);
+        Self::fast_trimmed_new_internal(ratio, atten, trans_width)
     }
 
     /// Create a Fast polyphase `Manager` from sample rates.

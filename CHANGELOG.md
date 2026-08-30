@@ -4,6 +4,17 @@
 
 ### Added
 
+- Measured-trim sinc design (opt-in via `SrcBuilder::trim_filter`): replaces
+  the fixed `+6 dB` order margin and the approximate Kaiser beta mapping with an
+  init-time search that measures the realized stopband of the worst polyphase
+  branch and picks the smallest even order meeting `attenuation` exactly
+  (~4-6% fewer taps at `trans_width = 0.05`, identical end-to-end rejection and
+  passband flatness). Init overhead 8-54 ms typical (warm-beta probe, coarse
+  evaluation grid with an exact stop-edge sample) and falls back to the
+  formula design when the search cannot converge. Also documents (with a
+  regression test against a high-iteration reference) why the Kaiser window
+  series parameters (`1e-10` term threshold, 31-term cap) hold coefficient
+  error to ~5e-13 relative across the full atten range.
 - Unified public API: [`SrcManager`](crates/simple_src/src/manager.rs), [`SrcBuilder`](crates/simple_src/src/manager.rs), [`Kernel`](crates/simple_src/src/kernel/mod.rs), [`SincPath`](crates/simple_src/src/kernel/mod.rs).
 - [`Kernel::Cubic`](crates/simple_src/src/kernel/mod.rs): Catmull-Rom cubic interpolation (ratio-only, zero latency).
 - Internal [`KernelSpec`](crates/simple_src/src/kernel/spec.rs) trait and shared engine loops (`polynomial_next_sample`, `fir_next_sample`).

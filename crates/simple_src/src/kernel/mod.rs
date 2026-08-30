@@ -51,6 +51,20 @@ impl KernelBackend {
     }
 }
 
+impl KernelBackend {
+    /// Converter with an optionally forced portable dot kernel (sinc only;
+    /// linear/cubic have no dot kernels). Test and benchmark hook.
+    #[cfg(any(test, feature = "internal-bench"))]
+    pub(crate) fn converter_forced(&self, force_scalar: bool) -> spec::KernelConverter {
+        match self {
+            Self::Sinc(b) => spec::KernelConverter::Other(Box::new(spec::OtherKernel::Sinc(
+                b.converter_forced(force_scalar),
+            ))),
+            other => other.converter(),
+        }
+    }
+}
+
 impl KernelSpec for KernelBackend {
     fn ratio(&self) -> f64 {
         match self {

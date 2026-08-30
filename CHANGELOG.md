@@ -19,6 +19,11 @@
   unification: phase accumulators are monomorphic per conversion mode, linear uses
   dedicated per-mode cores, and `process_block` runs the sample loop below the kernel
   dispatch (batched) instead of re-entering it per sample.
+- End-to-end test coverage for the scalar dot-kernel fallback: forced-scalar
+  converters now run through the full pipeline and are compared against the
+  runtime-selected kernel. A hidden `internal-bench` feature exposes
+  `SrcManager::converter_forced_kernel` so benchmarks can measure both kernels;
+  AVX2-forced benches skip themselves on CPUs without AVX2+FMA.
 - ~9x faster sinc Generic path (float ratios and explicit generic mode): the generic
   table is now stored as `(quan + 1)` polyphase rows instead of a half-sinc table with
   per-tap interpolation, so one output sample is the lerp of two dot products

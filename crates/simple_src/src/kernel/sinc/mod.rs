@@ -1,7 +1,7 @@
 pub(crate) mod builder;
 mod dot;
 mod filter;
-use dot::{DotFn, select_dot};
+use dot::{DotFn, dot_scalar, select_dot};
 
 use std::sync::Arc;
 
@@ -536,13 +536,26 @@ impl Backend {
     /// Create a `Converter` which actually implement the interpolation.
     #[inline]
     pub(crate) fn converter(&self) -> Converter {
+        self.converter_forced(false)
+    }
+
+    /// Converter with an optionally forced portable dot kernel. Used by tests
+    /// and the hidden `internal-bench` benchmark hook to exercise the scalar
+    /// fallback end to end on AVX2-capable machines.
+    #[inline]
+    pub(crate) fn converter_forced(&self, force_scalar: bool) -> Converter {
+        let dot = if force_scalar {
+            dot_scalar
+        } else {
+            select_dot()
+        };
         let inner = match (&self.ratio, &self.lut) {
             (Ratio::Float(ratio), Lut::Generic(rows)) => {
                 ConverterKind::Generic(GenericFirConverter::new(
                     PhaseAccum::float(ratio.recip()),
                     self.order,
                     rows.clone(),
-                    select_dot(),
+                    dot,
                 ))
             }
             (Ratio::Rational(ratio), Lut::Generic(rows)) => {
@@ -550,11 +563,11 @@ impl Backend {
                     PhaseAccum::rational(ratio.recip()),
                     self.order,
                     rows.clone(),
-                    select_dot(),
+                    dot,
                 ))
             }
             (Ratio::Rational(ratio), Lut::Fast(lut)) => ConverterKind::Fast(
-                RationalFastConverter::new(ratio.recip(), self.order, lut.clone(), select_dot()),
+                RationalFastConverter::new(ratio.recip(), self.order, lut.clone(), dot),
             ),
             _ => unreachable!("LUT kind must match ratio representation"),
         };
@@ -990,6 +1003,132 @@ mod tests {
             (odd_dc - even_dc).abs() < 0.02,
             "odd dc {odd_dc} vs even dc {even_dc}"
         );
+    }
+
+    /// End-to-end check that the scalar dot-kernel fallback produces the
+    /// same output as the runtime-selected kernel (AVX2 on this machine,
+    /// scalar otherwise) through the full pipeline. On non-AVX2 CPUs both
+    /// converters use the same kernel and the test degenerates to a
+    /// self-comparison, which is fine.
+    ///
+    /// Together with the spectral baselines (which run the selected kernel)
+    /// this transitively covers the fallback's numerical quality: outputs
+    /// agree to float reassociation noise.
+    #[test]
+    fn forced_scalar_pipeline_matches_selected_kernel() {
+        let run = |mgr: &crate::SrcManager, force_scalar: bool| {
+            let input: Vec<f64> = (0..5000)
+                .map(|i| ((i as f64) * 0.013).sin() + 0.3 * ((i as f64) * 0.107).cos())
+                .collect();
+            let mut cv = mgr.converter_forced_kernel(force_scalar);
+            let mut out = Vec::new();
+            let mut pos = 0;
+            let mut buf = vec![0.0f64; 1024];
+            while pos < input.len() {
+                let (consumed, produced) = cv.process_block(&input[pos..], &mut buf);
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+                pos += consumed;
+                out.extend_from_slice(&buf[..produced]);
+            }
+            let mut tail = vec![0.0f64; 8192];
+            loop {
+                let n = cv.flush(&mut tail);
+                if n == 0 {
+                    break;
+                }
+                out.extend_from_slice(&tail[..n]);
+            }
+            out
+        };
+
+        let cases = [
+            // (builder, label): Fast (a96), Generic rational, Generic float
+            (
+                crate::SrcManager::builder()
+                    .ratio(48000.0 / 44100.0)
+                    .attenuation(96.0)
+                    .trans_width(0.05)
+                    .fast()
+                    .build(),
+                "fast",
+            ),
+            (
+                crate::SrcManager::builder()
+                    .ratio(48000.0 / 44100.0)
+                    .attenuation(72.0)
+                    .quantify(32)
+                    .trans_width(0.05)
+                    .generic()
+                    .build(),
+                "generic rational",
+            ),
+            (
+                crate::SrcManager::builder()
+                    .ratio(f64::sqrt(2.0))
+                    .attenuation(72.0)
+                    .quantify(32)
+                    .trans_width(0.05)
+                    .generic()
+                    .build(),
+                "generic float",
+            ),
+        ];
+        for (built, label) in cases {
+            let mgr = built.unwrap();
+            let scalar = run(&mgr, true);
+            let selected = run(&mgr, false);
+            let n = scalar.len().min(selected.len());
+            assert!(n > 1000, "{label}: too few samples {n}");
+            let maxdiff = scalar[..n]
+                .iter()
+                .zip(&selected[..n])
+                .map(|(a, b)| (a - b).abs() / a.abs().max(1e-12))
+                .fold(0.0f64, f64::max);
+            assert!(
+                maxdiff < 1e-12,
+                "{label}: forced scalar vs selected kernel maxrel {maxdiff}"
+            );
+        }
+    }
+
+    /// The forced-scalar converter's batch loop must stay bit-identical to
+    /// its own per-sample iterator path (covers the fallback's process_block).
+    #[test]
+    fn forced_scalar_batch_matches_iterator() {
+        let mgr = crate::SrcManager::builder()
+            .ratio(48000.0 / 44100.0)
+            .attenuation(96.0)
+            .trans_width(0.05)
+            .fast()
+            .build()
+            .unwrap();
+        let input: Vec<f64> = (0..3000).map(|i| ((i as f64) * 0.021).sin()).collect();
+        let iter_out: Vec<f64> = {
+            let mut cv = mgr.converter_forced_kernel(true);
+            cv.process(input.iter().copied())
+                .take(mgr.output_len(input.len()))
+                .collect()
+        };
+        let mut batch_out = Vec::new();
+        let mut pos = 0;
+        let mut buf = vec![0.0f64; 256];
+        let mut cv = mgr.converter_forced_kernel(true);
+        while pos < input.len() {
+            let (consumed, produced) = cv.process_block(&input[pos..], &mut buf);
+            if consumed == 0 && produced == 0 {
+                break;
+            }
+            pos += consumed;
+            batch_out.extend_from_slice(&buf[..produced]);
+        }
+        let lat = mgr.latency();
+        let a = &iter_out[lat.min(iter_out.len())..];
+        let b = &batch_out[lat.min(batch_out.len())..];
+        let n = a.len().min(b.len());
+        assert!(n > 500);
+        assert_eq!(&a[..n], &b[..n], "forced scalar batch vs iterator");
     }
 
     /// The polyphase row table must reproduce the per-tap lerped 1-D table

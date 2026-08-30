@@ -51,6 +51,16 @@ impl SrcManager {
         Converter::from_backend(&self.backend)
     }
 
+    /// Hidden hook for tests and benchmarks: build a converter with the
+    /// portable scalar dot kernel forced, exercising the non-AVX2 fallback
+    /// end to end on AVX2-capable machines. Compiled only for the crate's
+    /// own tests and with the `internal-bench` feature.
+    #[cfg(any(test, feature = "internal-bench"))]
+    #[doc(hidden)]
+    pub fn converter_forced_kernel(&self, force_scalar: bool) -> Converter {
+        Converter::from_backend_forced(&self.backend, force_scalar)
+    }
+
     /// Convert a complete buffer, padding the end with zeros.
     pub fn convert(&self, input: &[f64]) -> Vec<f64> {
         self.backend.convert(input)

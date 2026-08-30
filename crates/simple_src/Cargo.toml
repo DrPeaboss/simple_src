@@ -9,6 +9,10 @@ description = "A simple sample rate conversion lib for audio."
 repository = "https://github.com/DrPeaboss/simple_src"
 keywords = ["audio", "dsp", "sample-rate"]
 
+[features]
+# Internal hook to benchmark/test the scalar dot-kernel fallback.
+internal-bench = []
+
 [dependencies]
 num-rational = { version = "0.4", default-features = false }
 

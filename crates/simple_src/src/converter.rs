@@ -13,6 +13,14 @@ impl Converter {
             inner: backend.converter(),
         }
     }
+
+    /// Test/bench hook: force the portable dot kernel for sinc paths.
+    #[cfg(any(test, feature = "internal-bench"))]
+    pub(crate) fn from_backend_forced(backend: &KernelBackend, force_scalar: bool) -> Self {
+        Self {
+            inner: backend.converter_forced(force_scalar),
+        }
+    }
 }
 
 impl Convert for Converter {

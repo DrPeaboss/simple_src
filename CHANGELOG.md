@@ -14,7 +14,9 @@
   formula design when the search cannot converge. Also documents (with a
   regression test against a high-iteration reference) why the Kaiser window
   series parameters (`1e-10` term threshold, 31-term cap) hold coefficient
-  error to ~5e-13 relative across the full atten range.
+  error to ~5e-13 relative across the full atten range. The stopband sweep
+  is accelerated by RustFFT by default (the `rustfft` feature), with a
+  built-in hand-written radix-2 FFT available via `--no-default-features`.
 - Unified public API: [`SrcManager`](crates/simple_src/src/manager.rs), [`SrcBuilder`](crates/simple_src/src/manager.rs), [`Kernel`](crates/simple_src/src/kernel/mod.rs), [`SincPath`](crates/simple_src/src/kernel/mod.rs).
 - [`Kernel::Cubic`](crates/simple_src/src/kernel/mod.rs): Catmull-Rom cubic interpolation (ratio-only, zero latency).
 - Internal [`KernelSpec`](crates/simple_src/src/kernel/spec.rs) trait and shared engine loops (`polynomial_next_sample`, `fir_next_sample`).

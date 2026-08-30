@@ -1,5 +1,7 @@
 use std::f64::consts::PI;
 
+use super::fft;
+
 pub(crate) const MIN_ORDER: u32 = 1;
 pub(crate) const MAX_ORDER: u32 = 2048;
 pub(crate) const MIN_QUAN: u32 = 1;
@@ -188,24 +190,91 @@ pub(crate) fn generate_fast_lut(len: usize, order: u32, beta: f64, cutoff: f64) 
     lut
 }
 
-/// Measured-trim design: search for the smallest even order and the
-/// Kaiser beta whose *worst-case polyphase branch* stopband meets `atten`
-/// exactly, replacing the `+6 dB` order margin and the approximate
-/// `calc_kaiser_beta` mapping with a direct measurement of the realized
-/// response.
-///
-/// The stopband maximum is evaluated on a fixed frequency grid over
-/// `[stop_edge, Nyquist]` for a few representative fractional phases
-/// (`frac` in the branch-tap sense `d = |order/2 - r + frac|`), so the
-/// guarantee transfers to the fractional-delay branches the converters
-/// actually evaluate.
-///
-/// Returns `None` when no order up to `MAX_ORDER` meets the spec (the
-/// caller falls back to the classic formula design).
+/// Single-frequency |H(f)|² via a direct DFT phasor recurrence. Used for the
+/// exact stop-edge point (both FFT paths) and as the reference/fallback for
+/// FIR orders that do not fit the fixed FFT size.
+fn dft_mag2(f_cycles: f64, h: &[f64]) -> f64 {
+    let w = -2.0 * PI * f_cycles;
+    let (wc, ws) = (w.cos(), w.sin());
+    let (mut cr, mut ci) = (1.0f64, 0.0f64);
+    let (mut sr, mut si) = (0.0f64, 0.0f64);
+    for &hk in h {
+        sr += hk * cr;
+        si += hk * ci;
+        let nr = cr * wc - ci * ws;
+        ci = cr * ws + ci * wc;
+        cr = nr;
+    }
+    sr * sr + si * si
+}
+
 /// Worst-case stopband level (dB) of the polyphase branches (fractional
 /// phases `FRACS`) over the grid bins at/above `stop_edge` plus the exact
-/// edge point. Direct DFT with a per-frequency phasor recurrence.
+/// edge point.
+///
+/// The grid bins are computed with a fixed-size FFT (`rustfft` when enabled,
+/// hand-written radix-2 otherwise); orders that do not fit the FFT size fall
+/// back to the direct DFT scan.
 fn branch_stopmax(order: u32, beta: f64, cutoff: f64, stop_edge: f64) -> f64 {
+    const FRACS: [f64; 3] = [0.0, 0.5, 0.9];
+    let taps_n = order as usize + 1;
+    if taps_n > fft::FFT_N {
+        return branch_stopmax_direct(order, beta, cutoff, stop_edge);
+    }
+
+    let ho = order as f64 * 0.5;
+    let i0b = bessel_i0(beta);
+    let mut worst = f64::NEG_INFINITY;
+    let mut re = vec![0.0; fft::FFT_N];
+    let mut im = vec![0.0; fft::FFT_N];
+    #[cfg(feature = "rustfft")]
+    let mut scratch = fft::rustfft_scratch();
+
+    for &frac in &FRACS {
+        let mut h = Vec::with_capacity(taps_n);
+        for r in 0..taps_n {
+            let d = (ho - r as f64 + frac).abs();
+            h.push(if d > ho {
+                0.0
+            } else {
+                windowed_sinc(d, ho, beta, i0b, cutoff)
+            });
+        }
+        let dc: f64 = h.iter().sum();
+        if dc.abs() > 1e-18 {
+            for c in &mut h {
+                *c /= dc;
+            }
+        }
+
+        // Fill the fixed-size FFT input. `taps_n <= fft::FFT_N` is checked
+        // above, so the zero-padded tail is always non-negative.
+        re[..taps_n].copy_from_slice(&h);
+        re[taps_n..].fill(0.0);
+        im.fill(0.0);
+        #[cfg(feature = "rustfft")]
+        fft::rustfft_forward(&mut re, &mut im, &mut scratch);
+        #[cfg(not(feature = "rustfft"))]
+        fft::fft_radix2(&mut re, &mut im);
+
+        // Grid bins at/above the stop edge, plus the exact edge point: the
+        // transition skirt is steepest right at the edge, and a bin-only
+        // grid would let the search push the spec crossing into the
+        // sub-bin gap between the edge and the first grid point.
+        let j0 = ((stop_edge * fft::FFT_N as f64 * 0.5).ceil() as u32).max(1);
+        for j in j0..fft::FFT_N as u32 / 2 {
+            let m2 = re[j as usize] * re[j as usize] + im[j as usize] * im[j as usize];
+            worst = worst.max(10.0 * m2.max(1e-18).log10());
+        }
+        let m2 = dft_mag2(stop_edge * 0.5, &h);
+        worst = worst.max(10.0 * m2.max(1e-18).log10());
+    }
+    worst
+}
+
+/// Direct DFT scan equivalent to [`branch_stopmax`]; retained as the
+/// reference for tests and as a fallback for orders exceeding [`fft::FFT_N`].
+fn branch_stopmax_direct(order: u32, beta: f64, cutoff: f64, stop_edge: f64) -> f64 {
     const FRACS: [f64; 3] = [0.0, 0.5, 0.9];
     const NF: f64 = 2048.0;
     let taps_n = order as usize + 1;
@@ -228,22 +297,6 @@ fn branch_stopmax(order: u32, beta: f64, cutoff: f64, stop_edge: f64) -> f64 {
                 *c /= dc;
             }
         }
-        // One DFT evaluation at an arbitrary frequency (cycles), tracking
-        // the phasor by recurrence: no FFT machinery needed.
-        let dft_mag2 = |f_cycles: f64, h: &[f64]| -> f64 {
-            let w = -2.0 * PI * f_cycles;
-            let (wc, ws) = (w.cos(), w.sin());
-            let (mut cr, mut ci) = (1.0f64, 0.0f64);
-            let (mut sr, mut si) = (0.0f64, 0.0f64);
-            for &hk in h {
-                sr += hk * cr;
-                si += hk * ci;
-                let nr = cr * wc - ci * ws;
-                ci = cr * ws + ci * wc;
-                cr = nr;
-            }
-            sr * sr + si * si
-        };
         // Grid bins at/above the stop edge, plus the exact edge point: the
         // transition skirt is steepest right at the edge, and a bin-only
         // grid would let the search push the spec crossing into the
@@ -259,6 +312,20 @@ fn branch_stopmax(order: u32, beta: f64, cutoff: f64, stop_edge: f64) -> f64 {
     worst
 }
 
+/// Measured-trim design: search for the smallest even order and the
+/// Kaiser beta whose *worst-case polyphase branch* stopband meets `atten`
+/// exactly, replacing the `+6 dB` order margin and the approximate
+/// `calc_kaiser_beta` mapping with a direct measurement of the realized
+/// response.
+///
+/// The stopband maximum is evaluated on a fixed frequency grid over
+/// `[stop_edge, Nyquist]` for a few representative fractional phases
+/// (`frac` in the branch-tap sense `d = |order/2 - r + frac|`), so the
+/// guarantee transfers to the fractional-delay branches the converters
+/// actually evaluate.
+///
+/// Returns `None` when no order up to `MAX_ORDER` meets the spec (the
+/// caller falls back to the classic formula design).
 pub(crate) fn trim_design(ratio: f64, atten: f64, trans_width: f64) -> Option<(u32, f64)> {
     const GRID: usize = 15;
     const GOLDEN_ITERS: usize = 12;
@@ -428,6 +495,26 @@ mod trim_tests {
             worst = worst.max((bessel_i0(x) - r).abs() / r);
         }
         assert!(worst < 1e-11, "bessel_i0 rel err {worst:.2e}");
+    }
+
+    /// The FFT-based stopband scan must agree with the direct DFT scan used
+    /// as the reference/fallback. This runs for the enabled FFT backend
+    /// (rustfft by default, hand-written radix-2 without the feature).
+    #[test]
+    fn branch_stopmax_fft_matches_direct() {
+        for (order, beta, cutoff, stop_edge) in [
+            (64, 5.0, 0.8, 0.85),
+            (128, 9.0, 0.6, 0.65),
+            (226, 12.0, 0.42, 0.44),
+            (512, 15.0, 0.25, 0.27),
+        ] {
+            let fft = branch_stopmax(order, beta, cutoff, stop_edge);
+            let direct = branch_stopmax_direct(order, beta, cutoff, stop_edge);
+            assert!(
+                (fft - direct).abs() < 1e-9,
+                "order {order}: fft={fft:.6} dB, direct={direct:.6} dB"
+            );
+        }
     }
 
     /// The trimmed design must meet the requested stopband on the measured

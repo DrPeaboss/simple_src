@@ -10,16 +10,33 @@ repository = "https://github.com/DrPeaboss/simple_src"
 keywords = ["audio", "dsp", "sample-rate"]
 
 [features]
+# RustFFT accelerates the measured-trim filter design. Disable default
+# features to use the built-in hand-written radix-2 FFT instead.
+default = ["rustfft"]
 # Internal hook to benchmark/test the scalar dot-kernel fallback.
 internal-bench = []
+rustfft = ["dep:rustfft"]
 
 [dependencies]
 num-rational = { version = "0.4", default-features = false }
+rustfft = { version = "6.4", optional = true }
 
 [dev-dependencies]
 divan = "0.1"
 hound = "3.5"
 
 [[bench]]
-name = "bench1"
+name = "throughput"
+harness = false
+
+[[bench]]
+name = "init"
+harness = false
+
+[[bench]]
+name = "forced"
+harness = false
+
+[[bench]]
+name = "trim_fft"
 harness = false

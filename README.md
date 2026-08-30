@@ -262,7 +262,9 @@ Generic-only (ignored on Fast or Auto when Fast is selected).
   exactly. Saves ~4–6% taps (order = per-sample cost) at the same guaranteed
   stopband; costs 8–54 ms of extra init time (ratio/attenuation dependent)
   and falls back to the formula design if the search cannot converge within
-  the order cap.
+  the order cap. The stopband sweep uses RustFFT by default (enabled by the
+  `rustfft` feature); use `--no-default-features` to build with the built-in
+  hand-written radix-2 FFT instead.
 
 ## CLI
 

@@ -1,5 +1,6 @@
 pub(crate) mod builder;
 mod dot;
+mod fft;
 mod filter;
 use dot::{DotFn, dot_scalar, select_dot};
 

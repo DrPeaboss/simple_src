@@ -88,7 +88,7 @@ fn main() {
         .unwrap();
     let out = convert_stream(&mgr, &step);
     let ratio = 2.0;
-    for i in 120..140.min(out.len()) {
+    for (i, &sample) in out.iter().enumerate().skip(120).take(20) {
         let t = i as f64 / ratio;
         let k = t.floor() as usize;
         let frac = t - k as f64;
@@ -97,10 +97,7 @@ fn main() {
         } else {
             "?".into()
         };
-        println!(
-            "  out[{i}]={:.6} t={t:.3} k={k} frac={frac:.3} bracket={bracket}",
-            out[i]
-        );
+        println!("  out[{i}]={sample:.6} t={t:.3} k={k} frac={frac:.3} bracket={bracket}");
     }
 
     // Startup: zero-padded left edge

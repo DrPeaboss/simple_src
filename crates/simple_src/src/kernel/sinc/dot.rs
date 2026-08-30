@@ -1,10 +1,11 @@
-//! f64 dot-product kernels for the sinc Fast (polyphase) path.
+//! f64 dot-product kernels for the sinc Fast (polyphase) and Generic paths.
 //!
-//! One hot kernel shape: `dot(tap, row)` over equal-length slices. The AVX2
-//! variant uses four f64x4 FMA accumulators with unaligned loads and a scalar
-//! tail; the portable variant is a zip-sum that LLVM auto-vectorizes at the
-//! baseline ISA. The kernel is chosen once when a converter is built and
-//! stored as a function pointer, so the hot loop never re-checks features.
+//! One hot kernel shape: `dot(tap, row)` over equal-length slices. On x86_64
+//! an AVX2+FMA variant (four f64x4 FMA accumulators, unaligned loads, scalar
+//! tail) is selected at runtime; elsewhere (and on CPUs without AVX2) a
+//! portable zip-sum is used, which LLVM auto-vectorizes at the baseline ISA.
+//! The kernel is chosen once when a converter is built and stored as a
+//! function pointer, so the hot loop never re-checks features.
 //!
 //! `#[inline(never)]`-style isolation matters here: letting LLVM inline every
 //! arm into the caller can merge the loops into an indirect-jump mega-loop
@@ -24,81 +25,101 @@ pub(crate) fn dot_scalar(tap: &[f64], row: &[f64]) -> f64 {
     tap.iter().zip(row).map(|(t, r)| t * r).sum()
 }
 
-/// AVX2+FMA kernel: 4 × f64x4 FMA accumulators, unaligned loads, scalar tail.
-///
-/// # Safety
-/// Must only be called on a CPU with `avx2` and `fma` (guaranteed by
-/// [`select_dot`], which is the only place this function is stored into a
-/// [`DotFn`]) — plus direct unit tests guarded by runtime detection.
-#[target_feature(enable = "avx2,fma")]
-unsafe fn dot_avx2(tap: &[f64], row: &[f64]) -> f64 {
-    use std::arch::x86_64::*;
-    debug_assert_eq!(tap.len(), row.len());
-    // SAFETY (edition 2024): the intrinsics below require the avx2,fma
-    // features guaranteed by the caller contract documented above.
-    unsafe {
-        let n = tap.len();
-        let tp = tap.as_ptr();
-        let rp = row.as_ptr();
-        let mut acc0 = _mm256_setzero_pd();
-        let mut acc1 = _mm256_setzero_pd();
-        let mut acc2 = _mm256_setzero_pd();
-        let mut acc3 = _mm256_setzero_pd();
-        let mut i = 0;
-        while i + 16 <= n {
-            acc0 = _mm256_fmadd_pd(_mm256_loadu_pd(tp.add(i)), _mm256_loadu_pd(rp.add(i)), acc0);
-            acc1 = _mm256_fmadd_pd(
-                _mm256_loadu_pd(tp.add(i + 4)),
-                _mm256_loadu_pd(rp.add(i + 4)),
-                acc1,
-            );
-            acc2 = _mm256_fmadd_pd(
-                _mm256_loadu_pd(tp.add(i + 8)),
-                _mm256_loadu_pd(rp.add(i + 8)),
-                acc2,
-            );
-            acc3 = _mm256_fmadd_pd(
-                _mm256_loadu_pd(tp.add(i + 12)),
-                _mm256_loadu_pd(rp.add(i + 12)),
-                acc3,
-            );
-            i += 16;
+#[cfg(target_arch = "x86_64")]
+mod x86 {
+    use super::DotFn;
+
+    /// AVX2+FMA kernel: 4 × f64x4 FMA accumulators, unaligned loads, scalar
+    /// tail.
+    ///
+    /// # Safety
+    /// Must only be called on a CPU with `avx2` and `fma` (guaranteed by
+    /// [`select`], which is the only place this function is stored into a
+    /// [`DotFn`]) — plus direct unit tests guarded by runtime detection.
+    #[target_feature(enable = "avx2,fma")]
+    pub(crate) unsafe fn dot_avx2(tap: &[f64], row: &[f64]) -> f64 {
+        use std::arch::x86_64::*;
+        debug_assert_eq!(tap.len(), row.len());
+        // SAFETY (edition 2024): the intrinsics below require the avx2,fma
+        // features guaranteed by the caller contract documented above.
+        unsafe {
+            let n = tap.len();
+            let tp = tap.as_ptr();
+            let rp = row.as_ptr();
+            let mut acc0 = _mm256_setzero_pd();
+            let mut acc1 = _mm256_setzero_pd();
+            let mut acc2 = _mm256_setzero_pd();
+            let mut acc3 = _mm256_setzero_pd();
+            let mut i = 0;
+            while i + 16 <= n {
+                acc0 =
+                    _mm256_fmadd_pd(_mm256_loadu_pd(tp.add(i)), _mm256_loadu_pd(rp.add(i)), acc0);
+                acc1 = _mm256_fmadd_pd(
+                    _mm256_loadu_pd(tp.add(i + 4)),
+                    _mm256_loadu_pd(rp.add(i + 4)),
+                    acc1,
+                );
+                acc2 = _mm256_fmadd_pd(
+                    _mm256_loadu_pd(tp.add(i + 8)),
+                    _mm256_loadu_pd(rp.add(i + 8)),
+                    acc2,
+                );
+                acc3 = _mm256_fmadd_pd(
+                    _mm256_loadu_pd(tp.add(i + 12)),
+                    _mm256_loadu_pd(rp.add(i + 12)),
+                    acc3,
+                );
+                i += 16;
+            }
+            while i + 4 <= n {
+                acc0 =
+                    _mm256_fmadd_pd(_mm256_loadu_pd(tp.add(i)), _mm256_loadu_pd(rp.add(i)), acc0);
+                i += 4;
+            }
+            let sum = _mm256_add_pd(_mm256_add_pd(acc0, acc1), _mm256_add_pd(acc2, acc3));
+            let mut lanes = [0.0f64; 4];
+            _mm256_storeu_pd(lanes.as_mut_ptr(), sum);
+            let mut tail = 0.0;
+            while i < n {
+                tail += tap[i] * row[i];
+                i += 1;
+            }
+            lanes.iter().sum::<f64>() + tail
         }
-        while i + 4 <= n {
-            acc0 = _mm256_fmadd_pd(_mm256_loadu_pd(tp.add(i)), _mm256_loadu_pd(rp.add(i)), acc0);
-            i += 4;
+    }
+
+    /// Pick the best kernel for this CPU. Called once per converter build;
+    /// the result is stored as a function pointer so the hot loop stays
+    /// branch-free.
+    pub(crate) fn select() -> DotFn {
+        if cfg!(all(target_feature = "avx2", target_feature = "fma")) {
+            // Statically enabled: no runtime check needed.
+            dot_avx2
+        } else if std::arch::is_x86_feature_detected!("avx2")
+            && std::arch::is_x86_feature_detected!("fma")
+        {
+            dot_avx2
+        } else {
+            super::dot_scalar
         }
-        let sum = _mm256_add_pd(_mm256_add_pd(acc0, acc1), _mm256_add_pd(acc2, acc3));
-        let mut lanes = [0.0f64; 4];
-        _mm256_storeu_pd(lanes.as_mut_ptr(), sum);
-        let mut tail = 0.0;
-        while i < n {
-            tail += tap[i] * row[i];
-            i += 1;
-        }
-        lanes.iter().sum::<f64>() + tail
+    }
+
+    #[cfg(test)]
+    pub(crate) fn avx2_available() -> bool {
+        cfg!(all(target_feature = "avx2", target_feature = "fma"))
+            || (std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma"))
     }
 }
 
-/// Pick the best kernel for this CPU. Called once per converter build; the
-/// result is stored as a function pointer so the hot loop stays branch-free.
+#[cfg(target_arch = "x86_64")]
+pub(crate) use x86::select as select_dot;
+
+/// Non-x86_64 targets (aarch64 etc.) use the portable auto-vectorized
+/// fallback.
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn select_dot() -> DotFn {
-    if cfg!(all(
-        target_arch = "x86_64",
-        target_feature = "avx2",
-        target_feature = "fma"
-    )) {
-        // Statically enabled: no runtime check needed.
-        dot_avx2
-    } else if cfg!(target_arch = "x86_64")
-        && std::arch::is_x86_feature_detected!("avx2")
-        && std::arch::is_x86_feature_detected!("fma")
-    {
-        dot_avx2
-    } else {
-        // Portable fallback (also covers aarch64 and other targets for now).
-        dot_scalar
-    }
+    dot_scalar
 }
 
 #[cfg(test)]
@@ -125,11 +146,8 @@ mod tests {
 
     #[test]
     fn avx2_matches_scalar_within_epsilon() {
-        if !cfg!(all(target_arch = "x86_64", target_feature = "avx2"))
-            && !(cfg!(target_arch = "x86_64")
-                && std::arch::is_x86_feature_detected!("avx2")
-                && std::arch::is_x86_feature_detected!("fma"))
-        {
+        #[cfg(target_arch = "x86_64")]
+        if !super::x86::avx2_available() {
             return; // AVX2 kernel not callable on this CPU
         }
         for n in [0, 1, 2, 3, 4, 5, 7, 16, 17, 97, 145, 1000] {
@@ -137,12 +155,17 @@ mod tests {
             let row = sample(n, 2);
             let scalar = dot_scalar(&tap, &row);
             let kahan = kahan(&tap, &row);
-            let avx = unsafe { dot_avx2(&tap, &row) };
+            #[cfg(target_arch = "x86_64")]
+            if super::x86::avx2_available() {
+                // SAFETY: guarded by runtime detection above.
+                let avx = unsafe { super::x86::dot_avx2(&tap, &row) };
+                let reference = scalar.abs().max(kahan.abs()).max(1.0);
+                assert!(
+                    (avx - kahan).abs() / reference < 1e-12,
+                    "n={n}: avx {avx} vs kahan {kahan}"
+                );
+            }
             let reference = scalar.abs().max(kahan.abs()).max(1.0);
-            assert!(
-                (avx - kahan).abs() / reference < 1e-12,
-                "n={n}: avx {avx} vs kahan {kahan}"
-            );
             assert!(
                 (scalar - kahan).abs() / reference < 1e-12,
                 "n={n}: scalar {scalar} vs kahan {kahan}"

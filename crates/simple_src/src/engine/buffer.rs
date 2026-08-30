@@ -23,16 +23,6 @@ impl FirTap {
         self.buf.iter().all(|&x| x == 0.0)
     }
 
-    #[inline]
-    pub(crate) fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    #[inline]
-    pub(crate) fn get(&self, index: usize) -> f64 {
-        self.buf[index]
-    }
-
     /// Contents in tap order (oldest first) as two contiguous slices, split
     /// where the ring wraps. Feeds the SIMD dot-product kernels.
     #[inline]

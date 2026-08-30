@@ -19,6 +19,13 @@
   unification: phase accumulators are monomorphic per conversion mode, linear uses
   dedicated per-mode cores, and `process_block` runs the sample loop below the kernel
   dispatch (batched) instead of re-entering it per sample.
+- ~9x faster sinc Generic path (float ratios and explicit generic mode): the generic
+  table is now stored as `(quan + 1)` polyphase rows instead of a half-sinc table with
+  per-tap interpolation, so one output sample is the lerp of two dot products
+  (`(1-t) * dot(taps, row[b]) + t * dot(taps, row[b+1])`, an exact algebraic transform;
+  results differ only by float reassociation). It reuses the AVX2/FMA dot kernels and a
+  dedicated batch loop shared with the Fast path. a96 44100->48000 batch: 196 us -> 21 us
+  per 10 ms. `lut_len()` for Generic now reports `(quan + 1) * (order + 1)`.
 - ~3x faster sinc Fast (polyphase) path: the LUT is stored flat, the FIR delay line
   feeds contiguous slices, an AVX2+FMA dot-product kernel (runtime-detected once per
   converter, portable auto-vectorized fallback, x86_64) replaces the per-tap zip, and

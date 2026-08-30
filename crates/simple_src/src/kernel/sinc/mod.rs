@@ -15,73 +15,123 @@ struct GenericFirConverter {
     phase: PhaseAccum,
     state: FirState,
     taps: FirTap,
-    filter: Arc<Vec<f64>>,
+    /// Flat polyphase row table: `(quan + 1)` rows of `order + 1`
+    /// coefficients. One output sample is the lerp of the dot products with
+    /// rows `b` and `b + 1`, where `b = floor(frac * quan)` -- the algebraic
+    /// transform of per-tap lerped 1-D table lookups, which turns the
+    /// scattered lookup work into two dense dot products (shared with the
+    /// Fast path kernels).
+    rows: Arc<Vec<f64>>,
+    stride: usize,
+    /// Row count (`quan + 1`).
+    phases: usize,
+    /// Phases per unit distance as f64 (exact: `quan <= 16384`).
     quan: f64,
-    half_order: f64,
+    /// Dot-product kernel selected once at build time (AVX2+FMA where
+    /// available, portable auto-vectorized fallback otherwise).
+    dot: DotFn,
 }
 
 impl GenericFirConverter {
-    fn new(step: PhaseAccum, order: u32, quan: u32, filter: Arc<Vec<f64>>) -> Self {
+    fn new(step: PhaseAccum, order: u32, rows: Arc<Vec<f64>>, dot: DotFn) -> Self {
+        let stride = order as usize + 1;
         Self {
             phase: step,
             state: FirState::new(),
-            taps: FirTap::new((order + 1) as usize),
-            filter,
-            quan: quan as f64,
-            half_order: 0.5 * order as f64,
+            taps: FirTap::new(stride),
+            phases: rows.len() / stride,
+            stride,
+            quan: (rows.len() / stride - 1) as f64,
+            rows,
+            dot,
         }
     }
 
-    fn interpolate(
-        phase: &PhaseAccum,
-        taps: &FirTap,
-        filter: &[f64],
-        quan: f64,
-        half_order: f64,
-    ) -> f64 {
-        let coef = phase.pos_float();
-        let mut interp = 0.0;
-        let pos_max = filter.len() - 1;
-        let tap_count = taps.len();
-        let iter_count = tap_count / 2;
-        let mut left;
-        let mut right;
-        if tap_count % 2 == 1 {
-            let pos = coef * quan;
-            let posu = pos as usize;
-            let h1 = filter[posu];
-            let h2 = filter[posu + 1];
-            let h = h1 + (h2 - h1) * (pos - posu as f64);
-            interp += taps.get(iter_count) * h;
-            left = iter_count - 1;
-            right = iter_count + 1;
-        } else {
-            left = iter_count - 1;
-            right = iter_count;
+    /// One output sample from phase `b` (row index) blended with `t` toward
+    /// row `b + 1`; `t` may be exactly 1.0 when `x` rounded up to `phases - 1`.
+    #[inline]
+    fn interpolate(&self, b: usize, t: f64) -> f64 {
+        let (tap_a, tap_b) = self.taps.slices();
+        let la = tap_a.len();
+        let r0 = b * self.stride;
+        let r1 = r0 + self.stride;
+        let rows = &self.rows[..];
+        // SAFETY: `self.dot` was selected by `select_dot` for this CPU.
+        unsafe {
+            let d0 = dot2(self.dot, rows, r0, la, self.stride, tap_a, tap_b);
+            let d1 = dot2(self.dot, rows, r1, la, self.stride, tap_a, tap_b);
+            d0 + (d1 - d0) * t
         }
-        let coef = coef + half_order;
-        for _ in 0..iter_count {
-            let pos1 = (coef - left as f64).abs() * quan;
-            let pos2 = (coef - right as f64).abs() * quan;
-            let pos1u = pos1 as usize;
-            let pos2u = pos2 as usize;
-            if pos1u < pos_max {
-                let h1 = filter[pos1u];
-                let h2 = filter[pos1u + 1];
-                let h = h1 + (h2 - h1) * (pos1 - pos1u as f64);
-                interp += taps.get(left) * h;
-            }
-            if pos2u < pos_max {
-                let h1 = filter[pos2u];
-                let h2 = filter[pos2u + 1];
-                let h = h1 + (h2 - h1) * (pos2 - pos2u as f64);
-                interp += taps.get(right) * h;
-            }
-            left = left.wrapping_sub(1);
-            right = right.wrapping_add(1);
-        }
-        interp
     }
+
+    /// Streaming batch loop for the Running state: monomorphic sample loop
+    /// with the same state transitions and operation order as the per-sample
+    /// `fir_next_sample` path (verified bit-identical by an in-crate test).
+    pub(crate) fn process_block(&mut self, input: &[f64], output: &mut [f64]) -> (usize, usize) {
+        if output.is_empty() {
+            // Matches the shared per-sample batch helper: nothing requested,
+            // nothing consumed.
+            return (0, 0);
+        }
+        let mut iter = crate::SliceIter {
+            data: input,
+            pos: 0,
+        };
+        let mut produced = 0;
+        // Resume from a previous input-exhausted suspension with the same
+        // behavior as `fir_next_sample`: shift one input sample, then fall
+        // through to the Running loop.
+        if matches!(self.state, FirState::Suspended) {
+            match iter.next() {
+                Some(s) => {
+                    self.taps.shift(s);
+                    self.state = FirState::Running;
+                }
+                None => return (iter.pos, produced),
+            }
+        }
+        let quan = self.quan;
+        let phases = self.phases;
+        while produced < output.len() {
+            if self.phase.needs_input_advance() {
+                self.phase.consume_input_step();
+                match iter.next() {
+                    Some(s) => self.taps.shift(s),
+                    None => {
+                        self.state = FirState::Suspended;
+                        return (iter.pos, produced);
+                    }
+                }
+                continue;
+            }
+            let x = self.phase.pos_float() * quan;
+            let b = (x as usize).min(phases - 2);
+            output[produced] = self.interpolate(b, x - b as f64);
+            produced += 1;
+            self.phase.advance_output();
+        }
+        (iter.pos, produced)
+    }
+}
+
+/// Two dot calls over one row split at the delay-line ring boundary.
+///
+/// # Safety
+/// `dot` must be valid for this CPU (see `select_dot`); the row starting at
+/// `base` must have `stride` elements available in `rows`.
+#[inline]
+unsafe fn dot2(
+    dot: DotFn,
+    rows: &[f64],
+    base: usize,
+    la: usize,
+    stride: usize,
+    tap_a: &[f64],
+    tap_b: &[f64],
+) -> f64 {
+    // SAFETY (edition 2024): caller guarantees the `dot` kernel matches the
+    // CPU and that `rows[base..base + stride]` is in bounds.
+    unsafe { dot(tap_a, &rows[base..base + la]) + dot(tap_b, &rows[base + la..base + stride]) }
 }
 
 struct RationalFastConverter {
@@ -116,37 +166,7 @@ impl RationalFastConverter {
         // SAFETY: `self.dot` was selected by `select_dot` for this CPU.
         unsafe { (self.dot)(tap_a, &row[..tap_a.len()]) + (self.dot)(tap_b, &row[tap_a.len()..]) }
     }
-}
 
-enum ConverterKind {
-    Generic(GenericFirConverter),
-    Fast(RationalFastConverter),
-}
-
-/// Opaque sample-rate converter created by [`Backend::converter`].
-pub(crate) struct Converter {
-    inner: ConverterKind,
-}
-
-impl Convert for GenericFirConverter {
-    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
-    where
-        I: Iterator<Item = f64>,
-    {
-        let filter = &self.filter;
-        let quan = self.quan;
-        let half_order = self.half_order;
-        fir_next_sample(
-            &mut self.state,
-            &mut self.phase,
-            &mut self.taps,
-            iter,
-            |phase, taps| Self::interpolate(phase, taps, filter, quan, half_order),
-        )
-    }
-}
-
-impl RationalFastConverter {
     /// Streaming batch loop for the Running state: the phase arithmetic is
     /// monomorphic (no `PhaseAccum` enum dispatch per output) and each output
     /// is one dot-kernel call. Semantics are bit-identical to `next_sample`
@@ -209,6 +229,51 @@ fn pos_ref(phase: &mut PhaseAccum) -> &mut usize {
     }
 }
 
+enum ConverterKind {
+    Generic(GenericFirConverter),
+    Fast(RationalFastConverter),
+}
+
+/// Opaque sample-rate converter created by [`Backend::converter`].
+pub(crate) struct Converter {
+    inner: ConverterKind,
+}
+
+impl Convert for GenericFirConverter {
+    fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
+    where
+        I: Iterator<Item = f64>,
+        Self: Sized,
+    {
+        let rows = &self.rows;
+        let stride = self.stride;
+        let phases = self.phases;
+        let quan = self.quan;
+        let dot = self.dot;
+        fir_next_sample(
+            &mut self.state,
+            &mut self.phase,
+            &mut self.taps,
+            iter,
+            move |phase, taps| {
+                let x = phase.pos_float() * quan;
+                let b = (x as usize).min(phases - 2);
+                let t = x - b as f64;
+                let (tap_a, tap_b) = taps.slices();
+                let la = tap_a.len();
+                let r0 = b * stride;
+                let r1 = r0 + stride;
+                // SAFETY: `dot` was selected by `select_dot` for this CPU.
+                unsafe {
+                    let d0 = dot2(dot, rows, r0, la, stride, tap_a, tap_b);
+                    let d1 = dot2(dot, rows, r1, la, stride, tap_a, tap_b);
+                    d0 + (d1 - d0) * t
+                }
+            },
+        )
+    }
+}
+
 impl Convert for RationalFastConverter {
     fn next_sample<I>(&mut self, iter: &mut I) -> Option<f64>
     where
@@ -250,7 +315,7 @@ impl Converter {
     {
         match &mut self.inner {
             ConverterKind::Fast(c) => c.process_block(input, output),
-            ConverterKind::Generic(c) => crate::kernel::spec::batch(c, input, output),
+            ConverterKind::Generic(c) => c.process_block(input, output),
         }
     }
 }
@@ -326,7 +391,6 @@ enum Lut {
 pub(crate) struct Backend {
     ratio: Ratio,
     order: u32,
-    quan: u32,
     latency: usize,
     lut: Lut,
 }
@@ -343,15 +407,14 @@ impl Backend {
         check_u32("order", order, MIN_ORDER, MAX_ORDER)?;
         check_f64("kaiser_beta", kaiser_beta, 0.0, 20.0)?;
         check_f64("cutoff", cutoff, 0.01, 1.0)?;
-        let filter = generate_filter_table(quan, order, kaiser_beta, cutoff);
+        let rows = generate_generic_rows(quan, order, kaiser_beta, cutoff);
         let fratio = ratio.as_float();
         let latency = (fratio * order as f64 * 0.5).round() as usize;
         Ok(Self {
             ratio,
             order,
-            quan,
             latency,
-            lut: Lut::Generic(Arc::new(filter)),
+            lut: Lut::Generic(Arc::new(rows)),
         })
     }
 
@@ -371,7 +434,6 @@ impl Backend {
         Ok(Self {
             ratio,
             order,
-            quan: 0,
             latency,
             lut: Lut::Fast(Arc::new(lut)),
         })
@@ -475,20 +537,20 @@ impl Backend {
     #[inline]
     pub(crate) fn converter(&self) -> Converter {
         let inner = match (&self.ratio, &self.lut) {
-            (Ratio::Float(ratio), Lut::Generic(filter)) => {
+            (Ratio::Float(ratio), Lut::Generic(rows)) => {
                 ConverterKind::Generic(GenericFirConverter::new(
                     PhaseAccum::float(ratio.recip()),
                     self.order,
-                    self.quan,
-                    filter.clone(),
+                    rows.clone(),
+                    select_dot(),
                 ))
             }
-            (Ratio::Rational(ratio), Lut::Generic(filter)) => {
+            (Ratio::Rational(ratio), Lut::Generic(rows)) => {
                 ConverterKind::Generic(GenericFirConverter::new(
                     PhaseAccum::rational(ratio.recip()),
                     self.order,
-                    self.quan,
-                    filter.clone(),
+                    rows.clone(),
+                    select_dot(),
                 ))
             }
             (Ratio::Rational(ratio), Lut::Fast(lut)) => ConverterKind::Fast(
@@ -549,12 +611,12 @@ impl Backend {
 
     /// Coefficient table length.
     ///
-    /// Generic is the half Kaiser-sinc table length, including the
-    /// interpolation pad. Fast is `numer * (order + 1)`.
+    /// Generic is `(quan + 1) * (order + 1)`: polyphase rows including the
+    /// fractional-phase row. Fast is `numer * (order + 1)`.
     #[inline]
     pub(crate) fn lut_len(&self) -> usize {
         match &self.lut {
-            Lut::Generic(filter) => filter.len(),
+            Lut::Generic(rows) => rows.len(),
             Lut::Fast(lut) => lut.len(),
         }
     }
@@ -720,7 +782,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(generic.mode(), ConvertMode::Rational);
-        assert_eq!(generic.lut_len(), generic_table_len(32, generic.order()));
+        assert_eq!(generic.lut_len(), (32 + 1) * (generic.order() as usize + 1));
     }
 
     #[test]
@@ -778,7 +840,7 @@ mod tests {
         assert_eq!(fast.mode(), ConvertMode::RationalFast);
         assert_eq!(
             generic.lut_len(),
-            generic_table_len(quality.quantify(), generic.order())
+            (quality.quantify() as usize + 1) * (generic.order() as usize + 1)
         );
     }
 
@@ -911,8 +973,8 @@ mod tests {
             .order(5)
             .build()
             .unwrap();
-        assert_eq!(odd.lut_len(), generic_table_len(7, 5));
-        assert_eq!(even.lut_len(), generic_table_len(8, 5));
+        assert_eq!(odd.lut_len(), (7 + 1) * 6);
+        assert_eq!(even.lut_len(), (8 + 1) * 6);
         let input = vec![1.0; 64];
         let odd_out = odd.convert(&input);
         let even_out = even.convert(&input);
@@ -928,6 +990,75 @@ mod tests {
             (odd_dc - even_dc).abs() < 0.02,
             "odd dc {odd_dc} vs even dc {even_dc}"
         );
+    }
+
+    /// The polyphase row table must reproduce the per-tap lerped 1-D table
+    /// (the old `interpolate`) to floating-point reassociation accuracy, for
+    /// odd and even tap counts and random fractional phases.
+    #[test]
+    fn generic_rows_match_direct_lerp() {
+        let beta = 6.0;
+        let cutoff = 0.5;
+        for (quan, order) in [(8u32, 5u32), (7, 5), (32, 12), (128, 96), (3, 1)] {
+            let table = generate_filter_table(quan, order, beta, cutoff);
+            let rows = generate_generic_rows(quan, order, beta, cutoff);
+            let taps_n = order as usize + 1;
+            let half = taps_n / 2;
+            let half_order = 0.5 * order as f64;
+            let pos_max = table.len() - 1;
+            let q = quan as f64;
+            let last_real = table.len() - 2;
+            for i in 0..64 {
+                let frac = (i as f64 * 0.618_033_988_749_894_9) % 1.0;
+                let taps: Vec<f64> = (0..taps_n)
+                    .map(|k| ((k * 7 + i) as f64 * 0.13).sin())
+                    .collect();
+
+                // Direct evaluation replicating the old per-tap algorithm.
+                let direct = || {
+                    let mut acc = 0.0;
+                    for (j, &tap) in taps.iter().enumerate() {
+                        let d = if j < half {
+                            (half - j) as f64 + frac
+                        } else {
+                            (j - half) as f64 - frac
+                        }
+                        .abs();
+                        let pos = d * q;
+                        let posu = pos as usize;
+                        if posu < pos_max || d <= half_order {
+                            let h = if posu < pos_max {
+                                table[posu] + (table[posu + 1] - table[posu]) * (pos - posu as f64)
+                            } else {
+                                table[last_real]
+                            };
+                            acc += tap * h;
+                        }
+                    }
+                    acc
+                };
+
+                // Row-table evaluation (what the new converters compute).
+                let x = frac * q;
+                let b = (x as usize).min(quan as usize);
+                let t = x - b as f64;
+                let r0 = &rows[b * taps_n..(b + 1) * taps_n];
+                let r1 = &rows[(b + 1) * taps_n..(b + 2) * taps_n];
+                let got: f64 = taps
+                    .iter()
+                    .zip(r0)
+                    .zip(r1)
+                    .map(|((tp, a), bb)| tp * ((1.0 - t) * a + t * bb))
+                    .sum();
+
+                let want = direct();
+                let scale = want.abs().max(1e-12);
+                assert!(
+                    (got - want).abs() / scale < 1e-12,
+                    "quan {quan} order {order} i {i}: {got} vs {want}"
+                );
+            }
+        }
     }
 
     /// process_block (batch loop) must be bit-identical to the per-sample
@@ -999,6 +1130,67 @@ mod tests {
             .unwrap();
         let order = mgr.order().unwrap() as usize;
         assert_eq!(mgr.lut_len().unwrap(), 160 * (order + 1));
+    }
+
+    /// process_block (batch loop) must be bit-identical to the per-sample
+    /// iterator path for the Generic converter, for Float and Rational
+    /// phases alike (both use the same dot kernels and state transitions).
+    #[test]
+    fn generic_batch_matches_iterator_bitwise() {
+        // 2.0 exercises the Rational phase; sqrt2 (approximation rejected by
+        // the bounded continued-fraction rules) exercises the Float phase.
+        for ratio in [2.0, f64::sqrt(2.0)] {
+            let mgr = crate::SrcManager::builder()
+                .ratio(ratio)
+                .attenuation(72.0)
+                .quantify(32)
+                .trans_width(0.1)
+                .generic()
+                .build()
+                .unwrap();
+            let input: Vec<f64> = (0..4000)
+                .map(|i| ((i as f64) * 0.013).sin() + 0.3 * ((i as f64) * 0.107).cos())
+                .collect();
+
+            // Iterator path, one sample at a time.
+            let mut cv = mgr.converter();
+            let iter_out: Vec<f64> = cv
+                .process(input.iter().copied())
+                .take(mgr.output_len(input.len()))
+                .collect();
+
+            // Batch path, chunks plus a flush drain.
+            let mut cv = mgr.converter();
+            let mut batch_out = Vec::new();
+            let mut pos = 0;
+            let mut buf = vec![0.0f64; 512];
+            while pos < input.len() {
+                let (consumed, produced) = cv.process_block(&input[pos..], &mut buf);
+                if consumed == 0 && produced == 0 {
+                    break;
+                }
+                pos += consumed;
+                batch_out.extend_from_slice(&buf[..produced]);
+            }
+            let mut tail = vec![0.0f64; 8192];
+            loop {
+                let n = cv.flush(&mut tail);
+                if n == 0 {
+                    break;
+                }
+                batch_out.extend_from_slice(&tail[..n]);
+            }
+
+            // `convert` drops latency; drop it from the streaming paths too.
+            let lat = mgr.latency();
+            let iter_cmp = &iter_out[lat.min(iter_out.len())..];
+            let batch_cmp = &batch_out[lat.min(batch_out.len())..];
+            let n = iter_cmp.len().min(batch_cmp.len());
+            assert!(
+                iter_cmp[..n] == batch_cmp[..n],
+                "batch vs iterator mismatch for ratio {ratio}"
+            );
+        }
     }
 
     #[test]

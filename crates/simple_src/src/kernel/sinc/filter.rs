@@ -76,6 +76,48 @@ pub(crate) fn generate_filter_table(quan: u32, order: u32, beta: f64, cutoff: f6
     filter
 }
 
+/// Flat polyphase row table for the Generic path: `(quan + 1)` rows of
+/// `order + 1` coefficients. Row `ph` holds the FIR coefficients for phase
+/// `ph / quan`; an arbitrary fractional phase `frac` with `b =
+/// floor(frac * quan)`, `t = frac * quan - b` is evaluated as
+/// `(1 - t) * dot(taps, row[b]) + t * dot(taps, row[b + 1])`.
+///
+/// This is the algebraic transform of the per-tap lerped 1-D table (both
+/// sides of the center interpolate toward row `b + 1` because the right-side
+/// distance `k - frac` decreases as `frac` grows). Identical in real
+/// arithmetic; floating-point results differ only by reassociation.
+pub(crate) fn generate_generic_rows(quan: u32, order: u32, beta: f64, cutoff: f64) -> Vec<f64> {
+    let table = generate_filter_table(quan, order, beta, cutoff);
+    let taps = order as usize + 1;
+    let quan = quan as usize;
+    let half = taps / 2;
+    let last_real = table.len() - 2;
+    let mut rows = vec![0.0; (quan + 1) * taps];
+    for ph in 0..=quan {
+        let row = &mut rows[ph * taps..(ph + 1) * taps];
+        for (j, coef) in row.iter_mut().enumerate() {
+            let idx = if j < half {
+                // Left of center: distance `d = k + frac`, `k = half - j >= 1`.
+                // Beyond the window (`idx > last_real`) the true coefficient
+                // is exactly 0, matching the old per-tap bounds guard.
+                let k = half - j;
+                k * quan + ph
+            } else if j == half {
+                // Odd taps: the center tap (`d = frac`). Even taps: the first
+                // right tap also sits at `d = frac`. Same lookup either way.
+                ph
+            } else {
+                // Right of center: `d = k - frac`, `k = j - half >= 1`.
+                // Always within the window, so never zero-guarded.
+                let k = j - half;
+                k * quan - ph
+            };
+            *coef = if idx <= last_real { table[idx] } else { 0.0 };
+        }
+    }
+    rows
+}
+
 /// Flat polyphase table: `len` rows of `order + 1` coefficients stored
 /// contiguously (row `i` at `data[i * (order + 1) .. (i + 1) * (order + 1)]`).
 /// The flat layout gives the dot-product kernels one contiguous load per row

@@ -727,7 +727,6 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     use super::builder::Builder;
-    use super::filter::*;
     use super::*;
     use crate::{ConvertMode, Error, Quality};
     use std::f64::consts::PI;

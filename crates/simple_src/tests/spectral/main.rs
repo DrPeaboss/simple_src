@@ -15,6 +15,7 @@
 //! cross-platform libm differences; tighten deliberately, never silently.
 
 mod analysis;
+mod report;
 
 use analysis::*;
 use simple_src::{Kernel, Quality, SrcManager};

@@ -282,6 +282,34 @@ Pass `--kernel linear` or `--kernel cubic` for ratio-only interpolation
 Use [plots.py](/plots.py) to show the results of conversion. It needs *numpy*, *scipy*
 and *matplotlib*.
 
+### Quality report (single-file HTML)
+
+The spectral baseline tests also produce one self-contained report that
+bundles every chart and metrics table into a single page — all SVGs inline,
+charts folded behind `<details>` blocks, so browsing does not open dozens of
+tabs:
+
+```
+$ cargo test -p simple_src --test spectral -- --nocapture
+$ # open target/tmp/quality/report.html  (also copied to output/report/index.html)
+```
+
+The report has sections for THD+N / max spur, stopband alias rejection,
+passband flatness, generic-vs-fast overlays, measured-trim vs formula design,
+and the quality-tier LUT cost curves, plus the exact commands to reproduce it.
+
+For `matplotlib` extras (spectrum overlays, filter frequency response,
+passband zooms, spectrograms) rendered headlessly as PNGs with a tiny index
+page:
+
+```
+$ python plots.py --report \
+        --quality-dir "$CARGO_TARGET_TMPDIR/quality" \
+        --wav-dir output/32bitfloat \
+        --out output/report
+$ # open output/report/extras.html
+```
+
 Here is an example showing the results of a downsampling 96kHz:
 
 ```

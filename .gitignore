@@ -3,3 +3,4 @@
 /perf*
 /flamegraph.svg
 /__pycache__
+/crates/simple_src/output

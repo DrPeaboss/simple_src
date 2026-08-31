@@ -771,6 +771,7 @@ self-contained (all SVGs inline) and can be opened in any browser.</p>
 
     // local copy next to the repo's output/ folder for convenient browsing
     let local = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
         .join("output")
         .join("report");
     if std::fs::create_dir_all(&local).is_ok() {

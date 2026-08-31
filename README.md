@@ -284,19 +284,24 @@ and *matplotlib*.
 
 ### Quality report (single-file HTML)
 
-The spectral baseline tests also produce one self-contained report that
-bundles every chart and metrics table into a single page — all SVGs inline,
-charts folded behind `<details>` blocks, so browsing does not open dozens of
-tabs:
+The quality report is a standalone build command (an example, not a test). It
+recomputes every quality baseline and bundles all charts and metrics tables
+into a single page — SVGs inline, charts folded behind `<details>` blocks, so
+browsing does not open dozens of tabs:
 
 ```
-$ cargo test -p simple_src --test spectral -- --nocapture
-$ # open target/tmp/quality/report.html  (also copied to output/report/index.html)
+$ cargo run -p simple_src --example report
+$ # open output/report/index.html  (artifacts: output/report/artifacts/)
 ```
 
-The report has sections for THD+N / max spur, stopband alias rejection,
-passband flatness, generic-vs-fast overlays, measured-trim vs formula design,
-and the quality-tier LUT cost curves, plus the exact commands to reproduce it.
+When run as part of the spectral assertion tests, the artifacts instead land
+in `$CARGO_TARGET_TMPDIR/quality/`. The report has sections for THD+N / max
+spur, stopband alias rejection, passband flatness, generic-vs-fast overlays,
+measured-trim vs formula design, and the quality-tier LUT cost curves, plus
+the exact commands to reproduce it.
+
+The report command also writes the spectrum CSVs and raw sweep files, so the
+`matplotlib` extras below work without running any test first.
 
 For `matplotlib` extras (spectrum overlays, filter frequency response,
 passband zooms, spectrograms) rendered headlessly as PNGs with a tiny index
@@ -304,7 +309,7 @@ page:
 
 ```
 $ python plots.py --report \
-        --quality-dir "$CARGO_TARGET_TMPDIR/quality" \
+        --quality-dir output/report/artifacts \
         --wav-dir output/32bitfloat \
         --out output/report
 $ # open output/report/extras.html

@@ -14,8 +14,8 @@
 //! Thresholds carry ~6 dB headroom below measured values to absorb
 //! cross-platform libm differences; tighten deliberately, never silently.
 
+#[path = "../../tooling/report/analysis.rs"]
 mod analysis;
-mod report;
 
 use analysis::*;
 use simple_src::{Kernel, Quality, SrcManager};

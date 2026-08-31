@@ -364,3 +364,225 @@ fn get_output_file(input: &Path, output: &Option<PathBuf>, output_sr: u32) -> Pa
 
     parent.join(new_file_name)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("simple_src_cli_test_{}_{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_tone_wav(path: &Path, sr: u32, frames: u32, bits: u16, float: bool) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: sr,
+            bits_per_sample: bits,
+            sample_format: if float {
+                hound::SampleFormat::Float
+            } else {
+                hound::SampleFormat::Int
+            },
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        if float {
+            for i in 0..frames {
+                w.write_sample(((i as f64 * 0.01).sin()) as f32).unwrap();
+            }
+        } else if bits == 16 {
+            for i in 0..frames {
+                w.write_sample((((i as f64 * 0.01).sin()) * 10_000.0) as i16)
+                    .unwrap();
+            }
+        } else {
+            for i in 0..frames {
+                w.write_sample((((i as f64 * 0.01).sin()) * 1_000_000.0) as i32)
+                    .unwrap();
+            }
+        }
+        w.finalize().unwrap();
+    }
+
+    fn args(input: PathBuf, output: Option<PathBuf>, kernel: &str, generic: bool) -> Args {
+        Args {
+            input,
+            output,
+            target_rate: 48000,
+            attenuation: 96,
+            quantify: 2048,
+            pass_width: 0.95,
+            generic,
+            kernel: kernel.to_string(),
+        }
+    }
+
+    #[test]
+    fn create_manager_supports_all_kernels() {
+        let ok = |k: &str| create_manager(44100, 48000, 96, 128, 0.95, false, k).is_ok();
+        assert!(ok("sinc"));
+        assert!(ok("linear"));
+        assert!(ok("cubic"));
+        let err = create_manager(44100, 48000, 96, 128, 0.95, false, "bogus")
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("unknown kernel"), "{err}");
+    }
+
+    #[test]
+    fn create_manager_generic_vs_fast_modes() {
+        let fast = create_manager(44100, 48000, 96, 128, 0.95, false, "sinc").unwrap();
+        assert_eq!(fast.mode(), simple_src::ConvertMode::RationalFast);
+        let generic = create_manager(44100, 48000, 96, 128, 0.95, true, "sinc").unwrap();
+        assert_eq!(generic.mode(), simple_src::ConvertMode::Rational);
+    }
+
+    #[test]
+    fn check_input_spec_accepts_supported_formats() {
+        let spec = |bits, format| hound::WavSpec {
+            channels: 2,
+            sample_rate: 44100,
+            bits_per_sample: bits,
+            sample_format: format,
+        };
+        check_input_spec(&spec(16, hound::SampleFormat::Int)).unwrap();
+        check_input_spec(&spec(24, hound::SampleFormat::Int)).unwrap();
+        check_input_spec(&spec(32, hound::SampleFormat::Int)).unwrap();
+        check_input_spec(&spec(32, hound::SampleFormat::Float)).unwrap();
+    }
+
+    #[test]
+    fn check_input_spec_rejects_unsupported_formats() {
+        let spec = |bits, format, channels| hound::WavSpec {
+            channels,
+            sample_rate: 44100,
+            bits_per_sample: bits,
+            sample_format: format,
+        };
+        assert!(check_input_spec(&spec(64, hound::SampleFormat::Float, 1)).is_err());
+        assert!(check_input_spec(&spec(8, hound::SampleFormat::Int, 1)).is_err());
+        assert!(check_input_spec(&spec(16, hound::SampleFormat::Int, 0)).is_err());
+    }
+
+    #[test]
+    fn get_output_frames_rejects_same_rate() {
+        let err = get_output_frames(44100, 44100, 44100).unwrap_err();
+        assert!(err.to_string().contains("same"), "{err}");
+    }
+
+    #[test]
+    fn get_output_frames_computes_truncated_ratio() {
+        // 800 frames @ 44100 -> 48000: floor(800 * 48000 / 44100) = 870.
+        assert_eq!(get_output_frames(800, 44100, 48000).unwrap(), 870);
+        assert_eq!(get_output_frames(1000, 44100, 16000).unwrap(), 362);
+    }
+
+    #[test]
+    fn output_file_naming_rules() {
+        let dir = temp_dir("naming_same");
+        let input = dir.join("in.wav");
+        let same_dir_expected = dir.join("in_48000.wav");
+        assert_eq!(get_output_file(&input, &None, 48000), same_dir_expected);
+
+        let explicit = dir.join("renamed.wav");
+        assert_eq!(
+            get_output_file(&input, &Some(explicit.clone()), 48000),
+            explicit
+        );
+        assert_eq!(
+            get_output_file(&input, &Some(dir.clone()), 48000),
+            same_dir_expected
+        );
+
+        let other = temp_dir("naming_other");
+        let expected_other = other.join("in.wav");
+        assert_eq!(
+            get_output_file(&input, &Some(other.clone()), 48000),
+            expected_other
+        );
+
+        let noext = dir.join("in");
+        let expected_noext = dir.join("in_48000");
+        assert_eq!(get_output_file(&noext, &None, 48000), expected_noext);
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
+    fn run_end_to_end_linear_int16() {
+        let dir = temp_dir("e2e_linear");
+        let input = dir.join("in.wav");
+        write_tone_wav(&input, 44100, 800, 16, false);
+        let output = dir.join("out.wav");
+        let a = args(input, Some(output.clone()), "linear", false);
+        run(&a).unwrap();
+
+        let reader = hound::WavReader::open(&output).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.sample_rate, 48000);
+        assert_eq!(spec.bits_per_sample, 16);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        // 800 * 48000 / 44100 truncated to 870 frames.
+        assert_eq!(reader.duration(), 870);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_end_to_end_sinc_fast() {
+        let dir = temp_dir("e2e_sinc");
+        let input = dir.join("in.wav");
+        write_tone_wav(&input, 44100, 800, 16, false);
+        let output = dir.join("out.wav");
+        let a = args(input, Some(output.clone()), "sinc", false);
+        run(&a).unwrap();
+
+        let reader = hound::WavReader::open(&output).unwrap();
+        assert_eq!(reader.spec().sample_rate, 48000);
+        assert_eq!(reader.duration(), 870);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_end_to_end_float32_preserves_format() {
+        let dir = temp_dir("e2e_float");
+        let input = dir.join("in.wav");
+        write_tone_wav(&input, 44100, 500, 32, true);
+        let output = dir.join("out.wav");
+        let a = args(input, Some(output.clone()), "sinc", false);
+        run(&a).unwrap();
+
+        let mut reader = hound::WavReader::open(&output).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.sample_rate, 48000);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Float);
+        assert_eq!(spec.bits_per_sample, 32);
+        // 500 * 48000 / 44100 truncated to 544 frames.
+        assert_eq!(reader.duration(), 544);
+        let max_abs = reader
+            .samples::<f32>()
+            .map(|s| s.unwrap().abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs.is_finite() && max_abs <= 2.0, "level {max_abs}"); // sinc ripple ~5% over 1.0
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_rejects_same_rate_and_missing_input() {
+        let dir = temp_dir("e2e_errors");
+        let input = dir.join("in.wav");
+        write_tone_wav(&input, 48000, 100, 16, false);
+        let output = dir.join("out.wav");
+        let mut a = args(input.clone(), Some(output.clone()), "linear", false);
+        a.target_rate = 48000;
+        let err = run(&a).unwrap_err();
+        assert!(err.to_string().contains("same"), "{err}");
+
+        let missing = dir.join("nope.wav");
+        let a2 = args(missing, Some(output.clone()), "linear", false);
+        assert!(run(&a2).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

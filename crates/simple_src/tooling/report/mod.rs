@@ -21,10 +21,12 @@
 //! tests (no ordering dependency), recomputing the `trim_design_baseline`
 //! grid with a few critical tones to stay fast.
 
+use std::f64::consts::PI;
 use std::time::Instant;
 
 mod charts;
 
+use super::analysis;
 use super::analysis::*;
 use charts::*;
 use simple_src::{Kernel, Quality, SrcManager};
@@ -153,6 +155,29 @@ fn flatness_case(manager: &SrcManager, name: &str) -> FlatCase {
         db,
         bin_hz,
     }
+}
+
+/// THD+N + full spectrum for an arbitrary rate pair (report-side runner).
+fn thdn_at_report(
+    manager: &SrcManager,
+    fs_in: f64,
+    fs_out: f64,
+    name: &str,
+) -> (analysis::ThdnMetrics, Vec<f64>) {
+    let (f, input) = binned_tone(fs_in, fs_out, 997.0, TONE_AMP, input_len_for(fs_in, fs_out));
+    let out = manager.convert(&input);
+    let core = &out[EDGE_TRIM..EDGE_TRIM + FFT_N];
+    let (db, bin_hz) = spectrum_db(core, fs_out);
+    let mt = thdn(&db, bin_hz, f);
+    let dir = artifact_root();
+    write_svg(
+        &dir.join(format!("{name}.svg")),
+        &db,
+        name,
+        fs_out / 2.0,
+        &[(f, "997 Hz".into())],
+    );
+    (mt, db)
 }
 
 struct TrimCase {
@@ -489,6 +514,46 @@ pub fn generate_report() {
         write_raw_f64(&dir.join("sweep_441_480_out.f64"), &out);
     }
 
+    // ---- extended coverage (P1) ---------------------------------------------
+    // float-pi generic path (distinct interpolation code path) and a 96k ->
+    // 44.1k downsampling alias case.
+    let pi_m = SrcManager::builder()
+        .ratio(PI)
+        .generic()
+        .quality(Quality::Bit16Fast)
+        .trans_width(TW)
+        .build()
+        .unwrap();
+    let pi_fs_out = PI * 44_100.0;
+    let (pi_mt, _pi_db) = thdn_at_report(&pi_m, 44_100.0, pi_fs_out, "sinc_pi_thdn");
+    let a96_m = SrcManager::builder()
+        .sample_rate(96_000, 44_100)
+        .quality(Quality::Bit16Fast)
+        .trans_width(TW)
+        .fast()
+        .build()
+        .unwrap();
+    let (a96_fs_in, a96_fs_out, a96_tone) = (96_000.0, 44_100.0, 25_000.0);
+    let (_, input) = binned_tone(
+        a96_fs_in,
+        a96_fs_in,
+        a96_tone,
+        TONE_AMP,
+        input_len_for(a96_fs_in, a96_fs_out),
+    );
+    let out = a96_m.convert(&input);
+    let core = &out[EDGE_TRIM..EDGE_TRIM + FFT_N];
+    let (a96_db, a96_bin_hz) = spectrum_db(core, a96_fs_out);
+    let (a96_residue, _a96_at) = peak_in(&a96_db, a96_bin_hz, 15_000.0, 21_500.0);
+    let a96_dir = artifact_root();
+    write_svg(
+        &a96_dir.join("96k_441_f96_alias.svg"),
+        &a96_db,
+        "96k_441_f96_alias",
+        a96_fs_out / 2.0,
+        &[(a96_tone, "25 kHz -> folds to 19.1k".into())],
+    );
+
     // ---- comparison charts ------------------------------------------------
     let g96 = &thdn_cases[0];
     let f96 = &thdn_cases[1];
@@ -619,6 +684,7 @@ self-contained (all SVGs inline) and can be opened in any browser.</p>
 <a href="#compare">generic vs fast</a> ·
 <a href="#trim">trim vs formula</a> ·
 <a href="#cost">quality cost</a> ·
+<a href="#extended">extended</a> ·
 <a href="#repro">reproduce</a>
 </p></nav>
 "##,
@@ -775,6 +841,55 @@ self-contained (all SVGs inline) and can be opened in any browser.</p>
         html.push_str(&figure(
             &dir.join("quality_cost.svg"),
             "LUT size vs attenuation (log scale)",
+        ));
+    }
+
+    // 6.5 extended coverage
+    {
+        let thdn_row = vec![vec![
+            "sinc_pi_thdn".to_string(),
+            f2(pi_mt.fundamental_dbfs),
+            f2(pi_mt.thd_db),
+            f2(pi_mt.thd_plus_n_db),
+            f2(pi_mt.max_spur_dbfs),
+            f2(pi_mt.spur_hz / 1000.0),
+        ]];
+        let headers = [
+            "case",
+            "fund dBFS",
+            "THD dB",
+            "THD+N dB",
+            "spur dB",
+            "spur kHz",
+        ];
+        let mut body = String::new();
+        body.push_str(&html_table(
+            &headers,
+            &thdn_row,
+            &[false, true, true, true, true, true],
+        ));
+        body.push_str(&html_table(
+            &["rate pair", "tone", "folds to", "residue dBFS"],
+            &[vec![
+                "96k → 44.1k".to_string(),
+                "25 kHz".to_string(),
+                "19.1 kHz".to_string(),
+                metric_bad(a96_residue),
+            ]],
+            &[false, true, true, true],
+        ));
+        body.push_str(&figure(
+            &dir.join("sinc_pi_thdn.svg"),
+            "Float-π generic path · THD+N spectrum (44100 → ~138.5 kHz, 997 Hz @ −6 dBFS)",
+        ));
+        body.push_str(&figure(
+            &dir.join("96k_441_f96_alias.svg"),
+            "96k → 44.1k · alias spectrum (25 kHz folds to 19.1 kHz)",
+        ));
+        html.push_str(&section(
+            "6.5 · extended coverage — float-π generic path & 96k → 44.1k",
+            "extended",
+            &body,
         ));
     }
 

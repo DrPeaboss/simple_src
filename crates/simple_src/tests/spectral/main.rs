@@ -17,6 +17,8 @@
 #[path = "../../tooling/report/analysis.rs"]
 mod analysis;
 
+mod p1;
+
 use analysis::*;
 use simple_src::{Kernel, Quality, SrcManager};
 

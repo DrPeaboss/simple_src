@@ -11,3 +11,10 @@ simple_src = { path = "crates/simple_src" }
 [profile.perf]
 inherits = "release"
 debug = true
+
+# Test builds stay unoptimized-by-default, but the spectral baselines run
+# hundreds of 65536-point FFTs; with debug assertions still on, optimisation
+# alone makes them 30x faster (13.4 s -> 0.5 s) without touching release
+# binaries or the red-line measurements (>= 6 dB headroom).
+[profile.test]
+opt-level = 2

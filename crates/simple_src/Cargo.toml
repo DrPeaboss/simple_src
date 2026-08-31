@@ -24,6 +24,10 @@ rustfft = { version = "6.4", optional = true }
 [dev-dependencies]
 divan = "0.1"
 hound = "3.5"
+# Accelerates the FFT-based spectral baselines (tooling/report) and the
+# quality-report example; the library's own trim design already uses rustfft
+# behind the `rustfft` feature.
+rustfft = "6.4"
 
 [[bench]]
 name = "throughput"

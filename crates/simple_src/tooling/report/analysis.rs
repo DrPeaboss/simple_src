@@ -1,14 +1,19 @@
 //! Signal-analysis helpers for the spectral baseline tests.
 //!
-//! Self-contained on purpose: a radix-2 FFT, Hann windowing, and the
-//! metric extractors (THD+N, max spur, alias residue, tone levels) needed
-//! to pin quality red lines without external dependencies. Artifacts
+//! Focused on the metrics (THD+N, max spur, alias residue, tone levels) that
+//! pin the quality red lines. The FFT is RustFFT (dev-dependency, so it is
+//! always available to the tests and the report example) with a cached
+//! planner; no hand-written transform is needed at this layer. Artifacts
 //! (CSV + SVG spectra, raw sweeps) are written to `CARGO_TARGET_TMPDIR`
 //! so failures can be inspected visually.
 
+use std::cell::RefCell;
 use std::f64::consts::PI;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
 pub const FFT_N: usize = 65536;
 /// Samples trimmed from each end of a converted buffer before analysis
@@ -19,44 +24,10 @@ pub const EDGE_TRIM: usize = 2048;
 // FFT + spectrum
 // ---------------------------------------------------------------------------
 
-/// In-place iterative radix-2 Cooley–Tukey FFT with a precomputed twiddle
-/// table. `re.len()` must be a power of two.
-pub fn fft_inplace(re: &mut [f64], im: &mut [f64]) {
-    let n = re.len();
-    assert!(n.is_power_of_two());
-    let bits = n.trailing_zeros();
-    let twiddle: Vec<(f64, f64)> = (0..n / 2)
-        .map(|k| {
-            let ang = -2.0 * PI * k as f64 / n as f64;
-            (ang.cos(), ang.sin())
-        })
-        .collect();
-    for i in 0..n {
-        let j = (i.reverse_bits()) >> (usize::BITS - bits);
-        if j > i {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2;
-    while len <= n {
-        let half = len / 2;
-        let step = n / len;
-        for start in (0..n).step_by(len) {
-            for k in 0..half {
-                let (c, s) = twiddle[k * step];
-                let i0 = start + k;
-                let i1 = i0 + half;
-                let tre = re[i1] * c - im[i1] * s;
-                let tim = re[i1] * s + im[i1] * c;
-                re[i1] = re[i0] - tre;
-                im[i1] = im[i0] - tim;
-                re[i0] += tre;
-                im[i0] += tim;
-            }
-        }
-        len *= 2;
-    }
+thread_local! {
+    /// RustFFT plans are cached internally; keeping the planner per thread
+    /// avoids re-planning the same size on every spectrum.
+    static PLANNER: RefCell<FftPlanner<f64>> = RefCell::new(FftPlanner::new());
 }
 
 /// Hann-windowed amplitude spectrum in dBFS (0 dBFS = full-scale sine).
@@ -64,21 +35,22 @@ pub fn fft_inplace(re: &mut [f64], im: &mut [f64]) {
 pub fn spectrum_db(x: &[f64], fs: f64) -> (Vec<f64>, f64) {
     let n = FFT_N;
     assert!(x.len() >= n, "need at least {n} samples, got {}", x.len());
-    let mut re: Vec<f64> = (0..n)
+    let mut buf: Vec<Complex<f64>> = (0..n)
         .map(|i| {
             let w = 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos();
-            x[i] * w
+            Complex::new(x[i] * w, 0.0)
         })
         .collect();
-    let mut im = vec![0.0; n];
-    fft_inplace(&mut re, &mut im);
+    PLANNER.with(|p| {
+        let fft = p.borrow_mut().plan_fft_forward(n);
+        fft.process(&mut buf);
+    });
     // A full-scale sine through a Hann window peaks at |X| = A*N/4
     // (window coherent gain 0.5); scale by 4/n so it reads 0 dBFS.
     let scale = 4.0 / n as f64;
-    let db: Vec<f64> = re[..n / 2]
+    let db: Vec<f64> = buf[..n / 2]
         .iter()
-        .zip(&im[..n / 2])
-        .map(|(r, i)| 20.0 * (scale * (r * r + i * i).sqrt()).max(1e-12).log10())
+        .map(|c| 20.0 * (scale * c.norm()).max(1e-12).log10())
         .collect();
     (db, fs / n as f64)
 }

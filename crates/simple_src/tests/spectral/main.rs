@@ -395,36 +395,54 @@ fn trimmed_design_baseline() {
         "\n{:>8} {:>8} {:>14} {:>14} {:>10}",
         "atten", "design", "order", "worst alias", "resid-atten"
     );
-    for atten in [96.0f64, 120.0, 144.0] {
-        let (plain_res, plain_order, _plain_ms) = trim_alias_case(atten, false);
-        let (trim_res, trim_order, _trim_ms) = trim_alias_case(atten, true);
+    // The 6 (atten, design) cases each sweep ~27 tones through a 65536-point
+    // FFT, which dominates the spectral suite time: ~43 s sequentially. The
+    // cases are independent pure computations, so run them in parallel and
+    // keep the print/assert order deterministic.
+    let specs: [(f64, bool); 6] = [
+        (96.0, false),
+        (96.0, true),
+        (120.0, false),
+        (120.0, true),
+        (144.0, false),
+        (144.0, true),
+    ];
+    let mut results: Vec<Option<(f64, u32, u128)>> = vec![None; specs.len()];
+    std::thread::scope(|scope| {
+        for (slot, &(atten, trimmed)) in results.iter_mut().zip(&specs) {
+            scope.spawn(move || {
+                *slot = Some(trim_alias_case(atten, trimmed));
+            });
+        }
+    });
+    for (i, &(atten, trimmed)) in specs.iter().enumerate() {
+        let (res, order, _ms) = results[i].unwrap();
+        // The trim order must not exceed the paired formula design's order.
+        let plain_order = if trimmed {
+            results[i ^ 1].unwrap().1
+        } else {
+            order
+        };
+        let label = if trimmed { "trimmed" } else { "formula" };
         println!(
             "{:>8.0} {:>8} {:>14} {:>14.2} {:>10.2}",
             atten,
-            "formula",
-            plain_order,
-            plain_res,
-            plain_res - (-atten)
-        );
-        println!(
-            "{:>8.0} {:>8} {:>14} {:>14.2} {:>10.2}",
-            atten,
-            "trimmed",
-            trim_order,
-            trim_res,
-            trim_res - (-atten)
+            label,
+            order,
+            res,
+            res - (-atten)
         );
         // The trimmed design must meet the requested stopband on every
         // polyphase branch: residue <= tone(-6 dBFS) - atten (+ slack).
         assert!(
-            trim_res < -atten - 4.0,
-            "trimmed design misses spec at {atten}: {trim_res:.2} dBFS"
+            res < -atten - 4.0,
+            "{label} design misses spec at {atten}: {res:.2} dBFS"
         );
         // The trim must not blow up the order to buy compliance.
         assert!(
-            trim_order <= plain_order + 16,
+            order <= plain_order + 16,
             "trimmed order {} >> formula order {}",
-            trim_order,
+            order,
             plain_order
         );
     }

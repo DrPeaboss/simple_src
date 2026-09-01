@@ -189,9 +189,7 @@ mod aarch64 {
     }
 
     pub(crate) fn select() -> DotFn {
-        if cfg!(target_feature = "neon")
-            || std::arch::is_aarch64_feature_detected!("neon")
-        {
+        if cfg!(target_feature = "neon") || std::arch::is_aarch64_feature_detected!("neon") {
             dot_neon
         } else {
             super::dot_scalar
@@ -200,8 +198,7 @@ mod aarch64 {
 
     #[cfg(test)]
     pub(crate) fn neon_available() -> bool {
-        cfg!(target_feature = "neon")
-            || std::arch::is_aarch64_feature_detected!("neon")
+        cfg!(target_feature = "neon") || std::arch::is_aarch64_feature_detected!("neon")
     }
 }
 

@@ -11,21 +11,25 @@ fn main() {
 }
 
 /// Forced dot-kernel benches (feature `internal-bench`): measure the portable
-/// scalar fallback against the runtime-selected (AVX2+FMA) kernel on the same
-/// machine. The AVX2-forced entries early-return on CPUs without AVX2+FMA, so
-/// they only measure where the kernel actually runs; the scalar entries run
-/// everywhere.
+/// scalar fallback against the runtime-selected SIMD kernel on the same
+/// machine. The SIMD-forced entries early-return on CPUs without the target
+/// feature, so they only measure where the kernel actually runs; the scalar
+/// entries run everywhere.
 #[cfg(feature = "internal-bench")]
 mod forced {
     use super::*;
 
-    fn avx2_available() -> bool {
+    fn simd_available() -> bool {
         #[cfg(target_arch = "x86_64")]
         {
             std::arch::is_x86_feature_detected!("avx2")
                 && std::arch::is_x86_feature_detected!("fma")
         }
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(target_arch = "aarch64")]
+        {
+            std::arch::is_aarch64_feature_detected!("neon")
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             false
         }
@@ -74,13 +78,13 @@ mod forced {
     }
 
     #[divan::bench(
-        name = "4. forced avx2 fast batch",
+        name = "4. forced simd fast batch",
         args = [Conv::C44k48k, Conv::C48k44k],
         sample_count = 500,
     )]
-    fn forced_avx2_fast_batch(bencher: divan::Bencher, conv: &Conv) {
-        if !avx2_available() {
-            return; // AVX2 not present on this CPU: nothing to measure
+    fn forced_simd_fast_batch(bencher: divan::Bencher, conv: &Conv) {
+        if !simd_available() {
+            return; // SIMD not present on this CPU: nothing to measure
         }
         let manager = sinc_manager(conv, 96.0, true);
         bencher.bench_local(move || batch_forced(&manager, conv, false));
@@ -97,12 +101,12 @@ mod forced {
     }
 
     #[divan::bench(
-        name = "4. forced avx2 fast iter",
+        name = "4. forced simd fast iter",
         args = [Conv::C44k48k, Conv::C48k44k],
         sample_count = 500,
     )]
-    fn forced_avx2_fast_iter(bencher: divan::Bencher, conv: &Conv) {
-        if !avx2_available() {
+    fn forced_simd_fast_iter(bencher: divan::Bencher, conv: &Conv) {
+        if !simd_available() {
             return;
         }
         let manager = sinc_manager(conv, 96.0, true);
@@ -120,12 +124,12 @@ mod forced {
     }
 
     #[divan::bench(
-        name = "4. forced avx2 generic batch",
+        name = "4. forced simd generic batch",
         args = [Conv::C44k48k, Conv::C48k44k],
         sample_count = 200,
     )]
-    fn forced_avx2_generic_batch(bencher: divan::Bencher, conv: &Conv) {
-        if !avx2_available() {
+    fn forced_simd_generic_batch(bencher: divan::Bencher, conv: &Conv) {
+        if !simd_available() {
             return;
         }
         let manager = sinc_manager(conv, 96.0, false);

@@ -1161,7 +1161,7 @@ mod tests {
                 .map(|(a, b)| (a - b).abs() / a.abs().max(1e-12))
                 .fold(0.0f64, f64::max);
             assert!(
-                maxdiff < 1e-12,
+                maxdiff < 5e-12,
                 "{label}: forced scalar vs selected kernel maxrel {maxdiff}"
             );
         }

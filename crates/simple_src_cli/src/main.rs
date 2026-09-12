@@ -211,15 +211,20 @@ impl Sink {
     }
 
     fn push(&mut self, s: f64) {
+        // Round (not truncate): HA's bit-depth probe feeds signals as small as
+        // ±1 LSB, where as-casting zeroes ~99% of samples and adds a DC bias
+        // on every integer output.
         match self {
-            Sink::I16(v) => v.push((s * 32767.0).clamp(-32767.0, 32767.0) as i16),
+            Sink::I16(v) => v.push((s * 32767.0).clamp(-32767.0, 32767.0).round() as i16),
             Sink::I24(v) => {
                 let scaled = if s < 0.0 {
                     s * 8388608.0
                 } else {
                     s * 8388607.0
                 };
-                v.push(i24::from_i32(scaled.clamp(-8388608.0, 8388607.0) as i32));
+                v.push(i24::from_i32(
+                    scaled.clamp(-8388608.0, 8388607.0).round() as i32
+                ));
             }
             Sink::I32(v) => {
                 let scaled = if s < 0.0 {
@@ -227,7 +232,7 @@ impl Sink {
                 } else {
                     s * 2147483647.0
                 };
-                v.push(scaled.clamp(-2147483648.0, 2147483647.0) as i32);
+                v.push(scaled.clamp(-2147483648.0, 2147483647.0).round() as i32);
             }
             Sink::F32(v) => v.push(s as f32),
             Sink::F64(v) => v.push(s),
@@ -687,6 +692,34 @@ mod tests {
         assert_eq!(reader.sample_rate(), 48000);
         assert_eq!(reader.encoding(), WavType::Pcm24);
         assert_eq!(reader.n_samples(), 544);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_end_to_end_int32_lsb_survives_round_trip() {
+        // HA's bit-depth probe feeds signals as small as ±1 LSB. Truncating
+        // on write zeroes almost all of them; rounding must keep them.
+        let dir = temp_dir("e2e_lsb32");
+        let input = dir.join("in.wav");
+        let samples: Vec<i32> = (0..44100)
+            .map(|i| (2.0 * (i as f64 * 0.01).sin()).round() as i32)
+            .collect();
+        let nonzero_in = samples.iter().filter(|&&s| s != 0).count();
+        wavers::write(&input, &samples, 48000, 1).unwrap();
+        let output = dir.join("out.wav");
+        let mut a = args(input, Some(output.clone()), "linear", false);
+        a.target_rate = 44100;
+        run(&a).unwrap();
+
+        let (out, _) = wavers::read::<i32, _>(&output).unwrap();
+        let nonzero_out = out.iter().filter(|&&s| s != 0).count();
+        assert!(nonzero_out > 0, "all samples collapsed to zero");
+        // a nonzero fraction comparable to the input's (±30% for edge effects)
+        let expected = nonzero_in * 44100 / 48000;
+        assert!(
+            nonzero_out * 100 > expected * 70,
+            "nonzero {nonzero_out} vs expected ~{expected}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

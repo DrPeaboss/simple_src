@@ -8,26 +8,18 @@ fn convert(file_prefix: &str, sr_old: u32, sr_new: u32) {
         sr_old / 1000,
         sr_new / 1000
     );
-    let mut reader = hound::WavReader::open(source_file).unwrap();
-    let out_duration = (ratio * (reader.duration() as f64)) as usize;
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: sr_new,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(target_file, spec).unwrap();
-    let in_iter = reader
-        .samples::<f32>()
-        .map(|s| s.unwrap() as f64)
-        .chain(std::iter::repeat(0.0));
-    SrcManager::with_ratio(ratio)
+    let (source, source_sr) = wavers::read::<f32, _>(source_file).unwrap();
+    assert_eq!(source_sr, sr_old as i32);
+    let out_duration = (ratio * (source.len() as f64)) as usize;
+    let in_iter = source.iter().map(|&s| s as f64);
+    let out: Vec<f32> = SrcManager::with_ratio(ratio)
         .unwrap()
         .converter()
         .process(in_iter)
         .take(out_duration)
-        .for_each(|s| writer.write_sample(s as f32).unwrap());
-    writer.finalize().unwrap();
+        .map(|s| s as f32)
+        .collect();
+    wavers::write(target_file, &out, sr_new as i32, 1).unwrap();
 }
 
 #[test]

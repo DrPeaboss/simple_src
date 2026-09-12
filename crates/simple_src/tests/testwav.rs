@@ -1,5 +1,5 @@
-use hound::{WavSpec, WavWriter};
 use std::f64::consts::TAU;
+use wavers::write as write_wav;
 
 struct Osc {
     phase: f64,
@@ -35,41 +35,27 @@ impl Osc {
 
 fn gen_beep(sample_rate: u32) {
     let filename = format!("beep_{}k.wav", sample_rate / 1000);
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = WavWriter::create(filename, spec).unwrap();
     let mut osc = Osc::init(sample_rate as f64);
     osc.set_freq(1000.0);
     let sample_count = sample_rate * 5;
-    for _ in 0..sample_count {
-        let sample = osc.next() * 0.99;
-        writer.write_sample(sample as f32).unwrap();
-    }
-    writer.finalize().unwrap();
+    let samples: Vec<f32> = (0..sample_count)
+        .map(|_| (osc.next() * 0.99) as f32)
+        .collect();
+    write_wav(filename, &samples, sample_rate as i32, 1).unwrap();
 }
 
 fn gen_sweep(sample_rate: u32) {
     let filename = format!("sweep_{}k.wav", sample_rate / 1000);
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = WavWriter::create(filename, spec).unwrap();
     let mut osc = Osc::init(sample_rate as f64);
     let sample_count = sample_rate * 5;
     let nyquist_freq = sample_rate as f64 / 2.0;
-    for i in 0..sample_count {
-        osc.set_freq(nyquist_freq * (i as f64 / sample_count as f64).powi(2));
-        let sample = osc.next() * 0.99;
-        writer.write_sample(sample as f32).unwrap();
-    }
-    writer.finalize().unwrap();
+    let samples: Vec<f32> = (0..sample_count)
+        .map(|i| {
+            osc.set_freq(nyquist_freq * (i as f64 / sample_count as f64).powi(2));
+            (osc.next() * 0.99) as f32
+        })
+        .collect();
+    write_wav(filename, &samples, sample_rate as i32, 1).unwrap();
 }
 
 #[test]

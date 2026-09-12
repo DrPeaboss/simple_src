@@ -62,25 +62,19 @@ fn convert(file_prefix: &str, src: &Src, remark: &str) {
         src.sr_old / 1000,
         src.sr_new / 1000
     );
-    let mut reader = hound::WavReader::open(source_file).unwrap();
-    let out_duration = (ratio * (reader.duration() as f64)) as usize;
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: src.sr_new,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(target_file, spec).unwrap();
-    let in_iter = reader
-        .samples::<f32>()
-        .map(|s| s.unwrap() as f64)
-        .chain(std::iter::repeat(0.0));
-    let mut cvtr = src.manager.converter();
-    cvtr.process(in_iter)
+    let (source, source_sr) = wavers::read::<f32, _>(source_file).unwrap();
+    assert_eq!(source_sr as u32, src.sr_old);
+    let out_duration = (ratio * (source.len() as f64)) as usize;
+    let in_iter = source.iter().map(|&s| s as f64);
+    let out: Vec<f32> = src
+        .manager
+        .converter()
+        .process(in_iter)
         .skip(src.manager.latency())
         .take(out_duration)
-        .for_each(|s| writer.write_sample(s as f32).unwrap());
-    writer.finalize().unwrap();
+        .map(|s| s as f32)
+        .collect();
+    wavers::write(target_file, &out, src.sr_new as i32, 1).unwrap();
 }
 
 fn impulse(src: &Src, remark: &str) {
@@ -89,23 +83,19 @@ fn impulse(src: &Src, remark: &str) {
         src.sr_old / 1000,
         src.sr_new / 1000
     );
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: src.sr_new,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(filename, spec).unwrap();
     let count = src.sr_old as usize;
     let in_iter = (0..count)
         .enumerate()
         .map(|(i, _)| if i == count / 2 { 1.0 } else { 0.0 });
-    let mut cvrt = src.manager.converter();
-    cvrt.process(in_iter)
+    let out: Vec<f32> = src
+        .manager
+        .converter()
+        .process(in_iter)
         .skip(src.manager.latency())
         .take(src.sr_new as usize)
-        .for_each(|s| writer.write_sample(s as f32).unwrap());
-    writer.finalize().unwrap();
+        .map(|s| s as f32)
+        .collect();
+    wavers::write(filename, &out, src.sr_new as i32, 1).unwrap();
 }
 
 fn impulse_raw(src: &Src, remark: &str) {

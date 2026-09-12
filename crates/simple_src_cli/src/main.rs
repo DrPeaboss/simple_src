@@ -1,7 +1,9 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use clap::Parser;
+use i24::i24;
 use simple_src::{Convert, Kernel, SincPath, SrcManager, process_planar};
 use std::path::{Path, PathBuf};
+use wavers::{Wav, WavType};
 
 #[derive(Parser)]
 #[command(name = "simple-src-cli")]
@@ -51,17 +53,218 @@ fn main() {
     }
 }
 
-type SampleIter<'a> = Box<dyn Iterator<Item = Result<f64>> + 'a>;
-type NormFn = Box<dyn Fn(f64) -> f64>;
+/// Sample formats the CLI can read and write. The output file always
+/// keeps the input format.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Format {
+    Int16,
+    Int24,
+    Int32,
+    Float32,
+    Float64,
+}
+
+fn detect_format(wav_type: WavType) -> Result<Format> {
+    match wav_type {
+        WavType::Pcm16 | WavType::EPcm16 => Ok(Format::Int16),
+        WavType::Pcm24 | WavType::EPcm24 => Ok(Format::Int24),
+        WavType::Pcm32 | WavType::EPcm32 => Ok(Format::Int32),
+        WavType::Float32 | WavType::EFloat32 => Ok(Format::Float32),
+        WavType::Float64 | WavType::EFloat64 => Ok(Format::Float64),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InputSpec {
+    channels: usize,
+    sample_rate: u32,
+    /// total interleaved frames
+    frames: usize,
+    format: Format,
+}
+
+/// Reads interleaved samples chunk by chunk in the file's native format and
+/// normalizes them to f64. Reading in native types (instead of asking wavers
+/// to convert) keeps the historical normalization constants and avoids the
+/// library's i24 -> f64 path, which scales by i32::MAX.
+struct SourceReader {
+    inner: NativeInner,
+    /// interleaved samples left unread
+    remaining: usize,
+}
+
+enum NativeInner {
+    I16(Wav<i16>),
+    I24(Wav<i24>),
+    I32(Wav<i32>),
+    F32(Wav<f32>),
+    F64(Wav<f64>),
+}
+
+impl SourceReader {
+    fn open(path: &Path) -> Result<(Self, InputSpec)> {
+        // The type parameter only affects data reads, so a probe through
+        // Wav<f64> inspects the header without touching the data chunk.
+        let probe = Wav::<f64>::from_path(path)
+            .map_err(|e| anyhow!("failed to open {}: {e}", path.display()))?;
+        let channels = probe.n_channels() as usize;
+        let sample_rate = probe.sample_rate();
+        let format = detect_format(probe.encoding())?;
+        check_spec(format, channels)?;
+        let remaining = probe.n_samples();
+        let inner = match format {
+            Format::Int16 => NativeInner::I16(
+                Wav::<i16>::from_path(path).map_err(|e| anyhow!("failed to open input: {e}"))?,
+            ),
+            Format::Int24 => NativeInner::I24(
+                Wav::<i24>::from_path(path).map_err(|e| anyhow!("failed to open input: {e}"))?,
+            ),
+            Format::Int32 => NativeInner::I32(
+                Wav::<i32>::from_path(path).map_err(|e| anyhow!("failed to open input: {e}"))?,
+            ),
+            Format::Float32 => NativeInner::F32(
+                Wav::<f32>::from_path(path).map_err(|e| anyhow!("failed to open input: {e}"))?,
+            ),
+            Format::Float64 => NativeInner::F64(
+                Wav::<f64>::from_path(path).map_err(|e| anyhow!("failed to open input: {e}"))?,
+            ),
+        };
+        Ok((
+            SourceReader { inner, remaining },
+            InputSpec {
+                channels,
+                sample_rate: sample_rate as u32,
+                frames: remaining / channels,
+                format,
+            },
+        ))
+    }
+
+    /// Reads up to `frames` frames of interleaved samples, normalized to f64.
+    /// The request is clamped to the remaining data because wavers errors on
+    /// short reads instead of returning a short block.
+    fn read_frames(&mut self, frames: usize, spec: &InputSpec) -> Result<Vec<f64>> {
+        let n = (frames * spec.channels).min(self.remaining);
+        self.remaining -= n;
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let samples = match &mut self.inner {
+            NativeInner::I16(w) => w
+                .read_samples(n)?
+                .iter()
+                .map(|&s| s as f64 / 32767.0)
+                .collect::<Vec<f64>>(),
+            NativeInner::I24(w) => w
+                .read_samples(n)?
+                .iter()
+                .map(|&s| {
+                    let v = s.to_i32();
+                    if v < 0 {
+                        v as f64 / 8388608.0
+                    } else {
+                        v as f64 / 8388607.0
+                    }
+                })
+                .collect::<Vec<f64>>(),
+            NativeInner::I32(w) => w
+                .read_samples(n)?
+                .iter()
+                .map(|&s| {
+                    if s < 0 {
+                        s as f64 / 2147483648.0
+                    } else {
+                        s as f64 / 2147483647.0
+                    }
+                })
+                .collect::<Vec<f64>>(),
+            NativeInner::F32(w) => w
+                .read_samples(n)?
+                .iter()
+                .map(|&s| s as f64)
+                .collect::<Vec<f64>>(),
+            NativeInner::F64(w) => w.read_samples(n)?.iter().copied().collect::<Vec<f64>>(),
+        };
+        Ok(samples)
+    }
+}
+
+/// Accumulates normalized output samples in the target format and writes the
+/// whole file at once (wavers has no streaming writer).
+enum Sink {
+    I16(Vec<i16>),
+    I24(Vec<i24>),
+    I32(Vec<i32>),
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+}
+
+impl Sink {
+    fn new(format: Format) -> Self {
+        match format {
+            Format::Int16 => Sink::I16(Vec::new()),
+            Format::Int24 => Sink::I24(Vec::new()),
+            Format::Int32 => Sink::I32(Vec::new()),
+            Format::Float32 => Sink::F32(Vec::new()),
+            Format::Float64 => Sink::F64(Vec::new()),
+        }
+    }
+
+    fn push(&mut self, s: f64) {
+        match self {
+            Sink::I16(v) => v.push((s * 32767.0).clamp(-32767.0, 32767.0) as i16),
+            Sink::I24(v) => {
+                let scaled = if s < 0.0 {
+                    s * 8388608.0
+                } else {
+                    s * 8388607.0
+                };
+                v.push(i24::from_i32(scaled.clamp(-8388608.0, 8388607.0) as i32));
+            }
+            Sink::I32(v) => {
+                let scaled = if s < 0.0 {
+                    s * 2147483648.0
+                } else {
+                    s * 2147483647.0
+                };
+                v.push(scaled.clamp(-2147483648.0, 2147483647.0) as i32);
+            }
+            Sink::F32(v) => v.push(s as f32),
+            Sink::F64(v) => v.push(s),
+        }
+    }
+
+    fn save(self, path: &Path, sample_rate: u32, channels: usize) -> Result<()> {
+        match self {
+            Sink::I16(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+                .map_err(|e| anyhow!("failed to write output: {e}"))?,
+            Sink::I24(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+                .map_err(|e| anyhow!("failed to write output: {e}"))?,
+            Sink::I32(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+                .map_err(|e| anyhow!("failed to write output: {e}"))?,
+            Sink::F32(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+                .map_err(|e| anyhow!("failed to write output: {e}"))?,
+            Sink::F64(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+                .map_err(|e| anyhow!("failed to write output: {e}"))?,
+        }
+        Ok(())
+    }
+}
+
+fn check_spec(format: Format, channels: usize) -> Result<()> {
+    let _ = format;
+    if channels == 0 {
+        bail!("bad wav file, which channels is 0");
+    }
+    Ok(())
+}
 
 fn run(args: &Args) -> Result<()> {
-    let mut reader = hound::WavReader::open(&args.input)?;
-    let input_spec = reader.spec();
-    check_input_spec(&input_spec)?;
-    let channels = input_spec.channels as usize;
+    let (mut source, input_spec) = SourceReader::open(&args.input)?;
+    let channels = input_spec.channels;
     let input_sr = input_spec.sample_rate;
     let output_sr = args.target_rate;
-    let output_frames = get_output_frames(reader.duration(), input_sr, output_sr)?;
+    let output_frames = get_output_frames(input_spec.frames as u64, input_sr, output_sr)?;
     let manager = create_manager(
         input_sr,
         output_sr,
@@ -71,86 +274,11 @@ fn run(args: &Args) -> Result<()> {
         args.generic,
         &args.kernel,
     )?;
-    let output_spec = hound::WavSpec {
-        channels: input_spec.channels,
-        sample_rate: output_sr,
-        bits_per_sample: input_spec.bits_per_sample,
-        sample_format: input_spec.sample_format,
-    };
     let output_file = get_output_file(&args.input, &args.output, output_sr);
     println!("output file is {output_file:?}");
     println!("mode {:?} ratio {}", manager.mode(), manager.ratio());
-    let mut writer = hound::WavWriter::create(output_file, output_spec)?;
+    let mut sink = Sink::new(input_spec.format);
     let latency = manager.latency();
-
-    let (samples_iter, norm_fn): (SampleIter<'_>, NormFn) = match input_spec.sample_format {
-        hound::SampleFormat::Float => {
-            let iter = reader.samples::<f32>().map(|s| {
-                s.context("failed to read sample from wav")
-                    .map(|s| s as f64)
-            });
-            (Box::new(iter), Box::new(|s: f64| s))
-        }
-        hound::SampleFormat::Int => match input_spec.bits_per_sample {
-            16 => {
-                let iter = reader.samples::<i16>().map(|s| {
-                    s.context("failed to read sample from wav")
-                        .map(|s| s as f64 / 32767.0)
-                });
-                (
-                    Box::new(iter),
-                    Box::new(|s: f64| (s * 32767.0).clamp(-32767.0, 32767.0)),
-                )
-            }
-            24 => {
-                let iter = reader.samples::<i32>().map(|s| {
-                    s.context("failed to read sample from wav").map(|s| {
-                        if s < 0 {
-                            s as f64 / 8388608.0
-                        } else {
-                            s as f64 / 8388607.0
-                        }
-                    })
-                });
-                (
-                    Box::new(iter),
-                    Box::new(|s: f64| {
-                        (if s < 0.0 {
-                            s * 8388608.0
-                        } else {
-                            s * 8388607.0
-                        })
-                        .clamp(-8388608.0, 8388607.0)
-                    }),
-                )
-            }
-            32 => {
-                let iter = reader.samples::<i32>().map(|s| {
-                    s.context("failed to read sample from wav").map(|s| {
-                        if s < 0 {
-                            s as f64 / 2147483648.0
-                        } else {
-                            s as f64 / 2147483647.0
-                        }
-                    })
-                });
-                (
-                    Box::new(iter),
-                    Box::new(|s: f64| {
-                        (if s < 0.0 {
-                            s * 2147483648.0
-                        } else {
-                            s * 2147483647.0
-                        })
-                        .clamp(-2147483648.0, 2147483647.0)
-                    }),
-                )
-            }
-            _ => bail!("unsupported integer bit depth"),
-        },
-    };
-
-    let mut samples = samples_iter.chain(std::iter::repeat_with(|| Ok(0.0)));
     let mut converters: Vec<_> = (0..channels).map(|_| manager.converter()).collect();
 
     let buf_len = (2 * latency).max(2048);
@@ -158,14 +286,20 @@ fn run(args: &Args) -> Result<()> {
     let mut pending_skip = latency;
 
     while n < output_frames {
+        let interleaved = source.read_frames(buf_len, &input_spec)?;
+        let frames_read = interleaved.len() / channels;
         let mut channel_samples: Vec<Vec<f64>> =
             (0..channels).map(|_| Vec::with_capacity(buf_len)).collect();
-        for _ in 0..buf_len {
-            for chan in channel_samples.iter_mut() {
-                let sample = samples
-                    .next()
-                    .ok_or_else(|| anyhow!("unexpected end of samples"))??;
-                chan.push(sample);
+        for frame in 0..buf_len {
+            for (chan, buf) in channel_samples.iter_mut().enumerate() {
+                // once the input runs out, feed zeros like the old
+                // iterator + repeat(0.0) chain did
+                let sample = if frame < frames_read {
+                    interleaved[frame * channels + chan]
+                } else {
+                    0.0
+                };
+                buf.push(sample);
             }
         }
 
@@ -191,9 +325,7 @@ fn run(args: &Args) -> Result<()> {
                 &mut pending_skip,
                 &mut n,
                 output_frames,
-                &norm_fn,
-                &input_spec,
-                &mut writer,
+                &mut sink,
             )?;
             continue;
         }
@@ -203,71 +335,38 @@ fn run(args: &Args) -> Result<()> {
             &mut pending_skip,
             &mut n,
             output_frames,
-            &norm_fn,
-            &input_spec,
-            &mut writer,
+            &mut sink,
         )?;
     }
-    writer.finalize()?;
+    sink.save(&output_file, output_sr, channels)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_planar_frames<W: std::io::Write + std::io::Seek>(
+fn write_planar_frames(
     channel_out: &[Vec<f64>],
     produced: usize,
     pending_skip: &mut usize,
     n: &mut u64,
     output_frames: u64,
-    norm_fn: &dyn Fn(f64) -> f64,
-    input_spec: &hound::WavSpec,
-    writer: &mut hound::WavWriter<W>,
+    sink: &mut Sink,
 ) -> Result<()> {
     let start = (*pending_skip).min(produced);
     *pending_skip -= start;
     let take = (produced - start).min((output_frames - *n) as usize);
     for i in start..start + take {
         for channel in channel_out {
-            let normalized = norm_fn(channel[i]);
-            match input_spec.sample_format {
-                hound::SampleFormat::Float => writer.write_sample(normalized as f32)?,
-                hound::SampleFormat::Int => match input_spec.bits_per_sample {
-                    16 => writer.write_sample(normalized as i16)?,
-                    24 | 32 => writer.write_sample(normalized as i32)?,
-                    _ => bail!("unsupported integer bit depth"),
-                },
-            }
+            sink.push(channel[i]);
         }
     }
     *n += take as u64;
     Ok(())
 }
 
-fn check_input_spec(spec: &hound::WavSpec) -> Result<()> {
-    match spec.sample_format {
-        hound::SampleFormat::Float => {
-            if spec.bits_per_sample != 32 {
-                bail!("unsupported floating point bit depth, only 32-bit float is supported");
-            }
-        }
-        hound::SampleFormat::Int => match spec.bits_per_sample {
-            16 | 24 | 32 => {}
-            _ => {
-                bail!("unsupported integer bit depth, only 16-bit, 24-bit and 32-bit are supported")
-            }
-        },
-    }
-    if spec.channels == 0 {
-        bail!("bad wav file, which channels is 0");
-    }
-    Ok(())
-}
-
-fn get_output_frames(input_frames: u32, input_sr: u32, output_sr: u32) -> Result<u64> {
+fn get_output_frames(input_frames: u64, input_sr: u32, output_sr: u32) -> Result<u64> {
     if input_sr == output_sr {
         bail!("sample rate is same, no need to convert");
     }
-    Ok(input_frames as u64 * output_sr as u64 / input_sr as u64)
+    Ok(input_frames * output_sr as u64 / input_sr as u64)
 }
 
 fn create_manager(
@@ -376,34 +475,37 @@ mod tests {
         dir
     }
 
-    fn write_tone_wav(path: &Path, sr: u32, frames: u32, bits: u16, float: bool) {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: sr,
-            bits_per_sample: bits,
-            sample_format: if float {
-                hound::SampleFormat::Float
-            } else {
-                hound::SampleFormat::Int
-            },
-        };
-        let mut w = hound::WavWriter::create(path, spec).unwrap();
-        if float {
-            for i in 0..frames {
-                w.write_sample(((i as f64 * 0.01).sin()) as f32).unwrap();
+    fn write_tone_wav(path: &Path, sr: u32, frames: u32, format: Format) {
+        match format {
+            Format::Float32 => {
+                let samples: Vec<f32> = (0..frames)
+                    .map(|i| ((i as f64 * 0.01).sin()) as f32)
+                    .collect();
+                wavers::write(path, &samples, sr as i32, 1).unwrap();
             }
-        } else if bits == 16 {
-            for i in 0..frames {
-                w.write_sample((((i as f64 * 0.01).sin()) * 10_000.0) as i16)
-                    .unwrap();
+            Format::Float64 => {
+                let samples: Vec<f64> = (0..frames).map(|i| (i as f64 * 0.01).sin()).collect();
+                wavers::write(path, &samples, sr as i32, 1).unwrap();
             }
-        } else {
-            for i in 0..frames {
-                w.write_sample((((i as f64 * 0.01).sin()) * 1_000_000.0) as i32)
-                    .unwrap();
+            Format::Int16 => {
+                let samples: Vec<i16> = (0..frames)
+                    .map(|i| (((i as f64 * 0.01).sin()) * 10_000.0) as i16)
+                    .collect();
+                wavers::write(path, &samples, sr as i32, 1).unwrap();
+            }
+            Format::Int32 => {
+                let samples: Vec<i32> = (0..frames)
+                    .map(|i| (((i as f64 * 0.01).sin()) * 1_000_000.0) as i32)
+                    .collect();
+                wavers::write(path, &samples, sr as i32, 1).unwrap();
+            }
+            Format::Int24 => {
+                let samples: Vec<i24> = (0..frames)
+                    .map(|i| i24::from_i32((((i as f64 * 0.01).sin()) * 1_000_000.0) as i32))
+                    .collect();
+                wavers::write(path, &samples, sr as i32, 1).unwrap();
             }
         }
-        w.finalize().unwrap();
     }
 
     fn args(input: PathBuf, output: Option<PathBuf>, kernel: &str, generic: bool) -> Args {
@@ -440,30 +542,20 @@ mod tests {
     }
 
     #[test]
-    fn check_input_spec_accepts_supported_formats() {
-        let spec = |bits, format| hound::WavSpec {
-            channels: 2,
-            sample_rate: 44100,
-            bits_per_sample: bits,
-            sample_format: format,
-        };
-        check_input_spec(&spec(16, hound::SampleFormat::Int)).unwrap();
-        check_input_spec(&spec(24, hound::SampleFormat::Int)).unwrap();
-        check_input_spec(&spec(32, hound::SampleFormat::Int)).unwrap();
-        check_input_spec(&spec(32, hound::SampleFormat::Float)).unwrap();
+    fn detect_format_maps_all_wav_types() {
+        assert_eq!(detect_format(WavType::Pcm16).unwrap(), Format::Int16);
+        assert_eq!(detect_format(WavType::EPcm16).unwrap(), Format::Int16);
+        assert_eq!(detect_format(WavType::Pcm24).unwrap(), Format::Int24);
+        assert_eq!(detect_format(WavType::Pcm32).unwrap(), Format::Int32);
+        assert_eq!(detect_format(WavType::Float32).unwrap(), Format::Float32);
+        assert_eq!(detect_format(WavType::Float64).unwrap(), Format::Float64);
+        assert_eq!(detect_format(WavType::EFloat64).unwrap(), Format::Float64);
     }
 
     #[test]
-    fn check_input_spec_rejects_unsupported_formats() {
-        let spec = |bits, format, channels| hound::WavSpec {
-            channels,
-            sample_rate: 44100,
-            bits_per_sample: bits,
-            sample_format: format,
-        };
-        assert!(check_input_spec(&spec(64, hound::SampleFormat::Float, 1)).is_err());
-        assert!(check_input_spec(&spec(8, hound::SampleFormat::Int, 1)).is_err());
-        assert!(check_input_spec(&spec(16, hound::SampleFormat::Int, 0)).is_err());
+    fn check_spec_rejects_zero_channels() {
+        assert!(check_spec(Format::Int16, 2).is_ok());
+        assert!(check_spec(Format::Float64, 0).is_err());
     }
 
     #[test]
@@ -515,18 +607,16 @@ mod tests {
     fn run_end_to_end_linear_int16() {
         let dir = temp_dir("e2e_linear");
         let input = dir.join("in.wav");
-        write_tone_wav(&input, 44100, 800, 16, false);
+        write_tone_wav(&input, 44100, 800, Format::Int16);
         let output = dir.join("out.wav");
         let a = args(input, Some(output.clone()), "linear", false);
         run(&a).unwrap();
 
-        let reader = hound::WavReader::open(&output).unwrap();
-        let spec = reader.spec();
-        assert_eq!(spec.sample_rate, 48000);
-        assert_eq!(spec.bits_per_sample, 16);
-        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        let reader = Wav::<i16>::from_path(&output).unwrap();
+        assert_eq!(reader.sample_rate(), 48000);
+        assert_eq!(reader.encoding(), WavType::Pcm16);
         // 800 * 48000 / 44100 truncated to 870 frames.
-        assert_eq!(reader.duration(), 870);
+        assert_eq!(reader.n_samples(), 870);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -534,14 +624,14 @@ mod tests {
     fn run_end_to_end_sinc_fast() {
         let dir = temp_dir("e2e_sinc");
         let input = dir.join("in.wav");
-        write_tone_wav(&input, 44100, 800, 16, false);
+        write_tone_wav(&input, 44100, 800, Format::Int16);
         let output = dir.join("out.wav");
         let a = args(input, Some(output.clone()), "sinc", false);
         run(&a).unwrap();
 
-        let reader = hound::WavReader::open(&output).unwrap();
-        assert_eq!(reader.spec().sample_rate, 48000);
-        assert_eq!(reader.duration(), 870);
+        let reader = Wav::<i16>::from_path(&output).unwrap();
+        assert_eq!(reader.sample_rate(), 48000);
+        assert_eq!(reader.n_samples(), 870);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -549,23 +639,54 @@ mod tests {
     fn run_end_to_end_float32_preserves_format() {
         let dir = temp_dir("e2e_float");
         let input = dir.join("in.wav");
-        write_tone_wav(&input, 44100, 500, 32, true);
+        write_tone_wav(&input, 44100, 500, Format::Float32);
         let output = dir.join("out.wav");
         let a = args(input, Some(output.clone()), "sinc", false);
         run(&a).unwrap();
 
-        let mut reader = hound::WavReader::open(&output).unwrap();
-        let spec = reader.spec();
-        assert_eq!(spec.sample_rate, 48000);
-        assert_eq!(spec.sample_format, hound::SampleFormat::Float);
-        assert_eq!(spec.bits_per_sample, 32);
+        let reader = Wav::<f32>::from_path(&output).unwrap();
+        assert_eq!(reader.sample_rate(), 48000);
+        assert_eq!(reader.encoding(), WavType::Float32);
         // 500 * 48000 / 44100 truncated to 544 frames.
-        assert_eq!(reader.duration(), 544);
-        let max_abs = reader
-            .samples::<f32>()
-            .map(|s| s.unwrap().abs())
-            .fold(0.0f32, f32::max);
+        assert_eq!(reader.n_samples(), 544);
+        let (samples, _) = wavers::read::<f32, _>(&output).unwrap();
+        let max_abs = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
         assert!(max_abs.is_finite() && max_abs <= 2.0, "level {max_abs}"); // sinc ripple ~5% over 1.0
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_end_to_end_float64_preserves_format() {
+        let dir = temp_dir("e2e_float64");
+        let input = dir.join("in.wav");
+        write_tone_wav(&input, 44100, 500, Format::Float64);
+        let output = dir.join("out.wav");
+        let a = args(input, Some(output.clone()), "sinc", false);
+        run(&a).unwrap();
+
+        let reader = Wav::<f64>::from_path(&output).unwrap();
+        assert_eq!(reader.sample_rate(), 48000);
+        assert_eq!(reader.encoding(), WavType::Float64);
+        assert_eq!(reader.n_samples(), 544);
+        let (samples, _) = wavers::read::<f64, _>(&output).unwrap();
+        let max_abs = samples.iter().fold(0.0f64, |m, &s| m.max(s.abs()));
+        assert!(max_abs.is_finite() && max_abs <= 2.0, "level {max_abs}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn run_end_to_end_int24_round_trip() {
+        let dir = temp_dir("e2e_int24");
+        let input = dir.join("in.wav");
+        write_tone_wav(&input, 44100, 500, Format::Int24);
+        let output = dir.join("out.wav");
+        let a = args(input, Some(output.clone()), "linear", false);
+        run(&a).unwrap();
+
+        let reader = Wav::<i24>::from_path(&output).unwrap();
+        assert_eq!(reader.sample_rate(), 48000);
+        assert_eq!(reader.encoding(), WavType::Pcm24);
+        assert_eq!(reader.n_samples(), 544);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -573,7 +694,7 @@ mod tests {
     fn run_rejects_same_rate_and_missing_input() {
         let dir = temp_dir("e2e_errors");
         let input = dir.join("in.wav");
-        write_tone_wav(&input, 48000, 100, 16, false);
+        write_tone_wav(&input, 48000, 100, Format::Int16);
         let output = dir.join("out.wav");
         let mut a = args(input.clone(), Some(output.clone()), "linear", false);
         a.target_rate = 48000;

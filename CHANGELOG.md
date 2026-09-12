@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- FIR group-delay alignment: the sinc engine computed its first output one
+  input sample too early, so the realized group delay was `order / 2 + 1`
+  input samples while [`SrcManager::latency`](crates/simple_src/src/manager.rs)
+  assumes `order / 2`. After the integer latency skip the output carried a
+  constant fractional time offset of up to one input sample (measured
+  −0.45 output samples at 96 kHz → 44.1 kHz), which appears as a phase slope
+  on impulse-response phase plots and as a small time skew against a
+  reference conversion. The FIR phase accumulator now pre-advances one full
+  input unit before the first output; the measured residual is the pure
+  latency rounding term (+0.009 output samples at 96 k → 44.1 k, identical
+  on the Fast and Generic paths). Magnitude response and spectral baselines
+  are unchanged. A regression test pins the group delay via the
+  impulse-response centroid (`fir_latency_aligns_group_delay`).
+
 ## 0.5.0
 
 ### Added

@@ -200,9 +200,17 @@ pub(crate) enum PhaseAccum {
 }
 
 impl PhaseAccum {
+    /// Start one full input unit advanced: the first output then consumes one
+    /// input before it is computed, so the FIR window is anchored at input
+    /// position `k / ratio` instead of one sample earlier. The realized group
+    /// delay becomes exactly `order / 2` input samples, matching the
+    /// `latency` formula (`round(fratio * order / 2)`); starting at zero left
+    /// a constant `order / 2 + 1` delay and, after the integer latency skip,
+    /// a residual fractional misalignment of up to one input sample (visible
+    /// as a phase slope on SRC comparison suites).
     #[inline]
     pub(crate) fn float(step: f64) -> Self {
-        Self::Float { pos: 0.0, step }
+        Self::Float { pos: 1.0, step }
     }
 
     #[inline]
@@ -210,7 +218,7 @@ impl PhaseAccum {
         let numer = *step.numer() as usize;
         let denom = *step.denom() as usize;
         Self::Rational {
-            pos: 0,
+            pos: denom,
             numer,
             denom,
         }

@@ -478,3 +478,59 @@ fn tmultithread() {
     h1.join().unwrap();
     h2.join().unwrap();
 }
+
+/// Skipping `latency()` must align the output timebase with the input: the
+/// FIR group delay has to be exactly `order / 2` input samples. For a
+/// symmetric, band-limited kernel the impulse-response centroid of the
+/// sampled output equals the continuous one, so the test reads the alignment
+/// error directly. The engine historically anchored its window one input
+/// sample late (group delay `order / 2 + 1`), leaving a constant fractional
+/// misalignment of up to one input sample after the integer latency skip.
+#[test]
+fn fir_latency_aligns_group_delay() {
+    let r = 44100 as f64 / 96000 as f64;
+    let builders = [
+        SrcManager::builder()
+            .sample_rate(96000, 44100)
+            .attenuation(96)
+            .trans_width(0.05),
+        SrcManager::builder()
+            .sample_rate(96000, 44100)
+            .attenuation(96)
+            .quantify(128)
+            .trans_width(0.05)
+            .generic(),
+    ];
+    for builder in builders {
+        let manager = builder.build().unwrap();
+        let order = manager.order().unwrap() as f64;
+        let latency = manager.latency();
+        let p = order as usize;
+        let n = 4 * p + 1;
+        let input = (0..n).map(|i| if i == p { 1.0 } else { 0.0 });
+        let mut converter = manager.converter();
+        let mut out: Vec<f64> = converter.process(input).skip(latency).collect();
+        let mut buf = [0.0f64; 4096];
+        loop {
+            let produced = converter.flush(&mut buf);
+            if produced == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..produced]);
+        }
+        let (num, den) = out
+            .iter()
+            .enumerate()
+            .fold((0.0f64, 0.0f64), |(a, b), (j, &s)| {
+                (a + j as f64 * s, b + s)
+            });
+        let centroid = num / den;
+        let expected = (p as f64 + order / 2.0) * r - latency as f64;
+        assert!(
+            (centroid - expected).abs() < 1e-4,
+            "IR centroid {centroid:.6} != expected {expected:.6} \
+             (order {order}, latency {latency}, {} samples)",
+            out.len()
+        );
+    }
+}

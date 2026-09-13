@@ -34,6 +34,14 @@ struct Args {
     #[arg(long)]
     generic: bool,
 
+    /// Fade the first/last N output samples with a raised-cosine ramp
+    /// (0 = off). A linear-phase FIR centered on the file edges responds to
+    /// an abrupt source onset/offset with a half-window Gibbs transient
+    /// (up to ~40% of the signal amplitude for the first ~N samples);
+    /// fading those samples removes the artifact.
+    #[arg(long, default_value_t = 0)]
+    edge_fade: usize,
+
     /// Conversion kernel: linear, cubic, or sinc
     #[arg(long, default_value = "sinc")]
     kernel: String,
@@ -280,6 +288,53 @@ impl Sink {
         }
     }
 
+    /// Raised-cosine fade of the first/last `fade` frames (in-place on the
+    /// interleaved buffer). Removes the linear-phase FIR's half-window Gibbs
+    /// transient at abrupt source onsets/offsets.
+    fn fade_edges(&mut self, fade: usize, channels: usize) {
+        if fade == 0 {
+            return;
+        }
+        let ramp = |i: usize| 0.5 - 0.5 * (std::f64::consts::PI * i as f64 / fade as f64).cos();
+        macro_rules! fade_buf {
+            ($v:expr, $t:ty) => {{
+                let frames = $v.len() / channels;
+                let fade = fade.min(frames / 2);
+                for i in 0..fade {
+                    let g = ramp(i);
+                    for ch in 0..channels {
+                        $v[i * channels + ch] = ($v[i * channels + ch] as f64 * g) as $t;
+                    }
+                    let j = frames - 1 - i;
+                    for ch in 0..channels {
+                        $v[j * channels + ch] = ($v[j * channels + ch] as f64 * g) as $t;
+                    }
+                }
+            }};
+        }
+        match self {
+            Sink::I16 { v, .. } => fade_buf!(v, i16),
+            Sink::I24 { v, .. } => {
+                let frames = v.len() / channels;
+                let fade = fade.min(frames / 2);
+                for i in 0..fade {
+                    let g = ramp(i);
+                    let apply = |x: &mut i24| {
+                        let f = x.to_i32() as f64 * g;
+                        *x = i24::from_i32(f.clamp(-8388608.0, 8388607.0).round() as i32);
+                    };
+                    for ch in 0..channels {
+                        apply(&mut v[i * channels + ch]);
+                        apply(&mut v[(frames - 1 - i) * channels + ch]);
+                    }
+                }
+            }
+            Sink::I32 { v, .. } => fade_buf!(v, i32),
+            Sink::F32(v) => fade_buf!(v, f32),
+            Sink::F64(v) => fade_buf!(v, f64),
+        }
+    }
+
     fn save(self, path: &Path, sample_rate: u32, channels: usize) -> Result<()> {
         match self {
             Sink::I16 { v, .. } => wavers::write(path, &v, sample_rate as i32, channels as u16)
@@ -384,6 +439,7 @@ fn run(args: &Args) -> Result<()> {
             &mut sink,
         )?;
     }
+    sink.fade_edges(args.edge_fade, channels);
     sink.save(&output_file, output_sr, channels)?;
     Ok(())
 }
@@ -563,6 +619,7 @@ mod tests {
             quantify: 2048,
             pass_width: 0.95,
             generic,
+            edge_fade: 0,
             kernel: kernel.to_string(),
         }
     }

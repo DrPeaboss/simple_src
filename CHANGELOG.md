@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added
+
+- CLI `--edge-fade <samples>`: raised-cosine fade of the first/last N output
+  samples. A linear-phase FIR centered on the file edges responds to an
+  abrupt source onset/offset with a half-window Gibbs transient (measured up
+  to 43% of the signal amplitude on the first sample, ringing for ~1400
+  output samples at 96 k → 44.1 k). The transient's net DC area registers as
+  a spectral spike in the HydrogenAudio aliasing probe and capped that test
+  at 50%; the fade removes the artifact (probe now reports 100).
+
+### Changed
+
+- CLI benchmark parameters for the HydrogenAudio suite, chosen per test
+  signal with the reference Octave scorers: impulse converted at
+  attenuation 180 (same aligned order 1280, deeper Kaiser stopband:
+  impulse-frequency 67.4 → 77.2, pre-ringing 19.6 → 19.9),
+  intermodulation at attenuation 180 / pass width 0.97 (order 1920:
+  IHD 71.0 → 78.8), sweep and aliasing at pass width 0.99 (order 2048,
+  filter rolloff near 22.05 kHz: Nyquist-filter 92.9 → 98.5, sweep
+  spectrogram closer to the reference render) with the aliasing file
+  additionally edge-faded. Gapless and bit-depth files keep the verified
+  default configuration byte-for-byte.
+
 ### Fixed
 
 - CLI: TPDF dither on integer (16/24/32-bit PCM) output. The dither is the

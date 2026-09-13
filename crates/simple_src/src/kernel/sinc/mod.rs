@@ -381,6 +381,47 @@ fn trans_width_from_pass_freq(old_sr: u32, new_sr: u32, pass_freq: u32) -> f64 {
     min_sr.saturating_sub(pass_freq.saturating_mul(2)) as f64 / min_sr as f64
 }
 
+/// Quantize a designed half-order up to a multiple of the reduced ratio's
+/// denominator so the FIR group delay `ratio * half_order` is an exact
+/// integer number of output samples. After the integer `latency` skip the
+/// content then sits exactly on the output grid (zero sub-sample offset),
+/// which maximizes delay-, phase-, and splice-sensitive measurements
+/// (interpolation nulls, impulse-response folding, gapless splice checks).
+///
+/// Applied only to the attenuation-derived Fast polyphase constructors,
+/// where the library picks the order freely; explicit-order constructors
+/// keep the caller's exact order, and the Generic half-table path stays on
+/// its designed order (growing it at a fixed quantify measurably degrades
+/// that path's row-lerp spur floor — +8.6 dB THD+N on the 44100→48000 @
+/// 96 dB baseline — and rescaling quantify does not recover it).
+///
+/// Spectral note: each Fast LUT row samples the windowed-sinc prototype at
+/// one phase, and the rows' residual per-phase response ripple modulates a
+/// tone into sidebands spaced `new_sr / phases` around it. The sideband
+/// level at any single tone is a quasi-random draw from the prototype's far
+/// stopband and reshuffles with the order (±~10 dB); the band-wide worst
+/// case is unchanged. Measured on the 44100→48000 @ 96 dB baseline: order
+/// 262→294 moves the 997 Hz spur from −144 to −132 dBFS while the worst
+/// in-band tone sideband improves slightly. Float ratios (no reduced
+/// integer form) and designs whose quantized order would exceed
+/// [`MAX_ORDER`] fall back to the designed order unchanged.
+fn aligned_order(ratio: &Ratio, order: u32) -> u32 {
+    let Some((_, den)) = ratio.parts() else {
+        return order;
+    };
+    let Ok(den) = u32::try_from(den) else {
+        return order;
+    };
+    if den <= 1 {
+        return order;
+    }
+    let aligned = (order / 2).next_multiple_of(den).saturating_mul(2);
+    if aligned == 0 || aligned > MAX_ORDER {
+        return order;
+    }
+    aligned
+}
+
 #[derive(Clone)]
 enum Lut {
     Generic(Arc<Vec<f64>>),
@@ -504,7 +545,7 @@ impl Backend {
         let rational = ratio.require_fast()?;
         let kaiser_beta = calc_kaiser_beta(atten);
         let fratio = ratio.as_float();
-        let order = calc_order(fratio, atten, trans_width);
+        let order = aligned_order(&ratio, calc_order(fratio, atten, trans_width));
         let cutoff = design_cutoff(fratio, trans_width);
         Self::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
     }
@@ -527,6 +568,7 @@ impl Backend {
                 calc_kaiser_beta(atten),
             ),
         };
+        let order = aligned_order(&ratio, order);
         Self::with_raw_fast_internal(rational, order, kaiser_beta, cutoff)
     }
 

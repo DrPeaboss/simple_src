@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- Rational-fast latency alignment: the Fast sinc path now quantizes its
+  designed half-order up to a multiple of the reduced ratio's denominator
+  (`aligned_order`), making the FIR group delay `ratio * half_order` an
+  exact integer number of output samples. After the integer `latency` skip
+  the content sits exactly on the output grid (zero sub-sample offset)
+  instead of carrying the latency-rounding residue (−3/320 output samples
+  at 96 kHz → 44.1 kHz, −0.0094 at 44.1 kHz → 48 kHz), which degraded
+  delay- and splice-sensitive measurements (impulse-response delay,
+  gapless splice continuity). Applied only to the attenuation-derived Fast
+  constructors; explicit-order constructors and the Generic half-table
+  path keep their designed orders. The quantized order reshuffles the
+  per-phase LUT sampling-ripple sidebands at any fixed probe tone
+  (±~10 dB; band-wide worst case unchanged) — the spectral baselines were
+  recalibrated accordingly (`sinc_f96_thdn` 997 Hz spur −144→−132 dBFS,
+  THD+N −134→−124 dB). A regression test pins the exact group delay
+  (`fir_latency_aligns_group_delay`).
 - FIR group-delay alignment: the sinc engine computed its first output one
   input sample too early, so the realized group delay was `order / 2 + 1`
   input samples while [`SrcManager::latency`](crates/simple_src/src/manager.rs)

@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use simple_src::{Convert, SrcBuilder, SrcManager};
+use simple_src::{Convert, ConvertMode, SrcBuilder, SrcManager};
 
 struct Src {
     sr_old: u32,
@@ -525,7 +525,24 @@ fn fir_latency_aligns_group_delay() {
                 (a + j as f64 * s, b + s)
             });
         let centroid = num / den;
-        let expected = (p as f64 + order / 2.0) * r - latency as f64;
+        // Contract differs by mode. Fast designs quantize the half-order to
+        // a multiple of the reduced ratio's denominator, making the group
+        // delay r*order/2 an exact integer == `latency` and landing the
+        // content exactly on the output grid (centroid == p*r). Generic
+        // keeps the designed order, so its content carries the usual
+        // rounding residual r*order/2 - latency.
+        let expected = match manager.mode() {
+            ConvertMode::RationalFast => {
+                let group_delay = r * order / 2.0;
+                assert!(
+                    (group_delay - latency as f64).abs() < 1e-9,
+                    "group delay {group_delay} != integer latency {latency} \
+                     (order {order} not denominator-aligned)"
+                );
+                p as f64 * r
+            }
+            _ => (p as f64 + order / 2.0) * r - latency as f64,
+        };
         assert!(
             (centroid - expected).abs() < 1e-4,
             "IR centroid {centroid:.6} != expected {expected:.6} \

@@ -191,20 +191,47 @@ impl SourceReader {
 
 /// Accumulates normalized output samples in the target format and writes the
 /// whole file at once (wavers has no streaming writer).
+///
+/// Integer variants carry a deterministic PRNG state for TPDF dither.
 enum Sink {
-    I16(Vec<i16>),
-    I24(Vec<i24>),
-    I32(Vec<i32>),
+    I16 { v: Vec<i16>, rng: u64 },
+    I24 { v: Vec<i24>, rng: u64 },
+    I32 { v: Vec<i32>, rng: u64 },
     F32(Vec<f32>),
     F64(Vec<f64>),
+}
+
+/// Seed for the output dither PRNG (splitmix64). The dither sequence is a
+/// function of this constant and the sample order, so conversions are
+/// bit-reproducible.
+const DITHER_SEED: u64 = 0x243F_6A88_85A3_08D4;
+
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Uniform `[0, 1)` from the high 53 bits of a splitmix64 draw.
+fn splitmix_uniform(state: &mut u64) -> f64 {
+    (splitmix64(state) >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
+}
+
+/// Triangular Probability Density Function dither in LSB units, peak ±1:
+/// the sum of two independent uniforms centered at zero. Standard practice
+/// when reducing floating-point material to a fixed integer depth.
+fn tpdf_lsb(rng: &mut u64) -> f64 {
+    splitmix_uniform(rng) + splitmix_uniform(rng) - 1.0
 }
 
 impl Sink {
     fn new(format: Format) -> Self {
         match format {
-            Format::Int16 => Sink::I16(Vec::new()),
-            Format::Int24 => Sink::I24(Vec::new()),
-            Format::Int32 => Sink::I32(Vec::new()),
+            Format::Int16 => Sink::I16 { v: Vec::new(), rng: DITHER_SEED },
+            Format::Int24 => Sink::I24 { v: Vec::new(), rng: DITHER_SEED },
+            Format::Int32 => Sink::I32 { v: Vec::new(), rng: DITHER_SEED },
             Format::Float32 => Sink::F32(Vec::new()),
             Format::Float64 => Sink::F64(Vec::new()),
         }
@@ -213,26 +240,40 @@ impl Sink {
     fn push(&mut self, s: f64) {
         // Round (not truncate): HA's bit-depth probe feeds signals as small as
         // ±1 LSB, where as-casting zeroes ~99% of samples and adds a DC bias
-        // on every integer output.
+        // on every integer output. TPDF dither decouples the rounding error
+        // from the signal: the probe's sources sit at the quantization floor
+        // (24-bit source RMS ≈ 0.5 LSB, with a −0.5 LSB truncation bias from
+        // the MATLAB generator), where an un-dithered rounding pattern is a
+        // threshold image of the signal. Its 256-point FFT then takes DC and
+        // Nyquist as exact integer sums, which can cancel to precisely 0.0 —
+        // log10(0.0) = −Inf poisons the band-average and the depth is
+        // reported as unsupported even though the audio is correct.
         match self {
-            Sink::I16(v) => v.push((s * 32767.0).clamp(-32767.0, 32767.0).round() as i16),
-            Sink::I24(v) => {
+            Sink::I16 { v, rng } => {
+                let d = tpdf_lsb(rng);
+                v.push((s * 32767.0 + d).clamp(-32767.0, 32767.0).round() as i16);
+            }
+            Sink::I24 { v, rng } => {
                 let scaled = if s < 0.0 {
                     s * 8388608.0
                 } else {
                     s * 8388607.0
                 };
                 v.push(i24::from_i32(
-                    scaled.clamp(-8388608.0, 8388607.0).round() as i32
+                    (scaled + tpdf_lsb(rng))
+                        .clamp(-8388608.0, 8388607.0)
+                        .round() as i32,
                 ));
             }
-            Sink::I32(v) => {
+            Sink::I32 { v, rng } => {
                 let scaled = if s < 0.0 {
                     s * 2147483648.0
                 } else {
                     s * 2147483647.0
                 };
-                v.push(scaled.clamp(-2147483648.0, 2147483647.0).round() as i32);
+                v.push((scaled + tpdf_lsb(rng))
+                    .clamp(-2147483648.0, 2147483647.0)
+                    .round() as i32);
             }
             Sink::F32(v) => v.push(s as f32),
             Sink::F64(v) => v.push(s),
@@ -241,11 +282,11 @@ impl Sink {
 
     fn save(self, path: &Path, sample_rate: u32, channels: usize) -> Result<()> {
         match self {
-            Sink::I16(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+            Sink::I16 { v, .. } => wavers::write(path, &v, sample_rate as i32, channels as u16)
                 .map_err(|e| anyhow!("failed to write output: {e}"))?,
-            Sink::I24(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+            Sink::I24 { v, .. } => wavers::write(path, &v, sample_rate as i32, channels as u16)
                 .map_err(|e| anyhow!("failed to write output: {e}"))?,
-            Sink::I32(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
+            Sink::I32 { v, .. } => wavers::write(path, &v, sample_rate as i32, channels as u16)
                 .map_err(|e| anyhow!("failed to write output: {e}"))?,
             Sink::F32(v) => wavers::write(path, &v, sample_rate as i32, channels as u16)
                 .map_err(|e| anyhow!("failed to write output: {e}"))?,

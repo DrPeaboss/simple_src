@@ -10,7 +10,13 @@ env:
 
 jobs:
   bench:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm adds a real-NEON aarch64 data point (free
+        # GitHub-hosted runner for public repos).
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Run benches

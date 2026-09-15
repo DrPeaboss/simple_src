@@ -488,7 +488,7 @@ fn tmultithread() {
 /// misalignment of up to one input sample after the integer latency skip.
 #[test]
 fn fir_latency_aligns_group_delay() {
-    let r = 44100 as f64 / 96000 as f64;
+    let r = 44100.0 / 96000.0;
     let builders = [
         SrcManager::builder()
             .sample_rate(96000, 44100)

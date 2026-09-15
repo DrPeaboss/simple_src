@@ -237,9 +237,18 @@ fn tpdf_lsb(rng: &mut u64) -> f64 {
 impl Sink {
     fn new(format: Format) -> Self {
         match format {
-            Format::Int16 => Sink::I16 { v: Vec::new(), rng: DITHER_SEED },
-            Format::Int24 => Sink::I24 { v: Vec::new(), rng: DITHER_SEED },
-            Format::Int32 => Sink::I32 { v: Vec::new(), rng: DITHER_SEED },
+            Format::Int16 => Sink::I16 {
+                v: Vec::new(),
+                rng: DITHER_SEED,
+            },
+            Format::Int24 => Sink::I24 {
+                v: Vec::new(),
+                rng: DITHER_SEED,
+            },
+            Format::Int32 => Sink::I32 {
+                v: Vec::new(),
+                rng: DITHER_SEED,
+            },
             Format::Float32 => Sink::F32(Vec::new()),
             Format::Float64 => Sink::F64(Vec::new()),
         }
@@ -279,9 +288,11 @@ impl Sink {
                 } else {
                     s * 2147483647.0
                 };
-                v.push((scaled + tpdf_lsb(rng))
-                    .clamp(-2147483648.0, 2147483647.0)
-                    .round() as i32);
+                v.push(
+                    (scaled + tpdf_lsb(rng))
+                        .clamp(-2147483648.0, 2147483647.0)
+                        .round() as i32,
+                );
             }
             Sink::F32(v) => v.push(s as f32),
             Sink::F64(v) => v.push(s),

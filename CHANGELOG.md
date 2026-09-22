@@ -4,6 +4,17 @@
 
 ### Added
 
+- wasm32 simd128 dot kernel: four f64x2 mul+add accumulators, compiled in
+  only when the build enables `-C target-feature=+simd128` (wasm has no std
+  runtime feature detection, and an engine that cannot instantiate v128 code
+  fails module validation before any code runs, so the build flag doubles as
+  the engine contract). Default wasm builds keep the portable scalar
+  fallback. On Node 24 / WASI the Bit16Fast 44.1 k → 48 k conversion runs
+  ~2.7x faster than the scalar build with bit-identical output (both paths
+  are mul+add with no fused multiply-add, so rounding matches lane-for-lane).
+  CI gains a wasm job (build, clippy, lib tests under wasmtime) for both
+  configurations.
+
 - CLI `--edge-fade <samples>`: raised-cosine fade of the first/last N output
   samples. A linear-phase FIR centered on the file edges responds to an
   abrupt source onset/offset with a half-window Gibbs transient (measured up

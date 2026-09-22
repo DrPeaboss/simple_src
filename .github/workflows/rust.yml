@@ -36,3 +36,44 @@ jobs:
       run: cargo test --verbose
     - name: Test (no default features)
       run: cargo test -p simple_src --no-default-features --lib --verbose
+
+  wasm:
+    # wasm32 support, in the two shipped configurations: the default scalar
+    # build and `-C target-feature=+simd128` (the simd kernel is gated on the
+    # build flag, not runtime detection — engines that cannot instantiate
+    # v128 code reject the module outright). Lib tests run on a real engine
+    # via wasmtime using the wasip1 target; unknown-unknown is compile-only.
+    runs-on: ubuntu-latest
+    env:
+      WASMTIME_VERSION: v48.0.2
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install rustfmt, clippy, and wasm targets
+      run: |
+        rustup component add rustfmt clippy
+        rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - name: Install wasmtime
+      run: |
+        curl -fsSL https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz | tar xJ
+        echo "$PWD/wasmtime-${WASMTIME_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+    - name: Format
+      run: cargo fmt --all -- --check
+    - name: Clippy (scalar)
+      run: cargo clippy -p simple_src --target wasm32-unknown-unknown --all-targets -- -D warnings
+    - name: Clippy (simd128)
+      run: cargo clippy -p simple_src --target wasm32-unknown-unknown --all-targets -- -D warnings
+      env:
+        RUSTFLAGS: "-Dwarnings -C target-feature=+simd128"
+    - name: Clippy (no default features)
+      run: cargo clippy -p simple_src --target wasm32-unknown-unknown --no-default-features --all-targets -- -D warnings
+    - name: Build
+      run: cargo build -p simple_src --target wasm32-unknown-unknown --release
+    - name: Test (scalar)
+      run: cargo test -p simple_src --target wasm32-wasip1 --lib
+      env:
+        CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+    - name: Test (simd128)
+      run: cargo test -p simple_src --target wasm32-wasip1 --lib
+      env:
+        CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+        RUSTFLAGS: "-Dwarnings -C target-feature=+simd128"

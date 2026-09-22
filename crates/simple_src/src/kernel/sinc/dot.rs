@@ -3,11 +3,16 @@
 //! One hot kernel shape: `dot(tap, row)` over equal-length slices. On x86_64
 //! an AVX2+FMA variant (four f64x4 FMA accumulators, unaligned loads, scalar
 //! tail) is selected at runtime; on aarch64 a NEON variant (four f64x2 FMA
-//! accumulators, unaligned loads, scalar tail) is used. Elsewhere (and on
-//! CPUs without those features) a portable zip-sum is used, which LLVM
-//! auto-vectorizes at the baseline ISA. The kernel is chosen once when a
-//! converter is built and stored as a function pointer, so the hot loop never
-//! re-checks features.
+//! accumulators, unaligned loads, scalar tail) is used; on wasm32 a simd128
+//! variant (four f64x2 mul+add accumulators, scalar tail; standard wasm SIMD
+//! has no fused f64 multiply-add — that is relaxed-simd) is compiled in only
+//! when the build enables `-C target-feature=+simd128`. wasm has no std
+//! runtime feature detection, and engines that cannot instantiate v128 code
+//! reject the module outright, so the build flag doubles as the engine
+//! contract. Elsewhere (and on CPUs/engines without those features) a
+//! portable zip-sum is used, which LLVM auto-vectorizes at the baseline ISA.
+//! The kernel is chosen once when a converter is built and stored as a
+//! function pointer, so the hot loop never re-checks features.
 //!
 //! `#[inline(never)]`-style isolation matters here: letting LLVM inline every
 //! arm into the caller can merge the loops into an indirect-jump mega-loop
@@ -205,8 +210,100 @@ mod aarch64 {
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64::select as select_dot;
 
-/// Non-x86_64/non-aarch64 targets use the portable auto-vectorized fallback.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm32 {
+    use super::DotFn;
+
+    /// wasm simd128 kernel: 4 × f64x2 mul+add accumulators, scalar tail.
+    /// Standard simd128 has no fused f64 multiply-add (that is relaxed-simd),
+    /// so each lane takes the same two roundings as the scalar path.
+    ///
+    /// # Safety
+    /// Must only be called on an engine with `simd128` support. This module
+    /// only compiles with `target_feature = "simd128"`, and every engine that
+    /// can instantiate such a module implements v128 ops, so [`select`] is the
+    /// only place this function is stored into a [`DotFn`].
+    #[target_feature(enable = "simd128")]
+    pub(crate) unsafe fn dot_simd128(tap: &[f64], row: &[f64]) -> f64 {
+        use std::arch::wasm32::*;
+        debug_assert_eq!(tap.len(), row.len());
+        // SAFETY (edition 2024): the intrinsics below require the simd128
+        // feature guaranteed by the caller contract documented above.
+        unsafe {
+            let n = tap.len();
+            let tp = tap.as_ptr();
+            let rp = row.as_ptr();
+            let mut acc0 = f64x2_splat(0.0);
+            let mut acc1 = f64x2_splat(0.0);
+            let mut acc2 = f64x2_splat(0.0);
+            let mut acc3 = f64x2_splat(0.0);
+            let mut i = 0;
+            while i + 8 <= n {
+                acc0 = f64x2_add(
+                    acc0,
+                    f64x2_mul(v128_load(tp.add(i).cast()), v128_load(rp.add(i).cast())),
+                );
+                acc1 = f64x2_add(
+                    acc1,
+                    f64x2_mul(
+                        v128_load(tp.add(i + 2).cast()),
+                        v128_load(rp.add(i + 2).cast()),
+                    ),
+                );
+                acc2 = f64x2_add(
+                    acc2,
+                    f64x2_mul(
+                        v128_load(tp.add(i + 4).cast()),
+                        v128_load(rp.add(i + 4).cast()),
+                    ),
+                );
+                acc3 = f64x2_add(
+                    acc3,
+                    f64x2_mul(
+                        v128_load(tp.add(i + 6).cast()),
+                        v128_load(rp.add(i + 6).cast()),
+                    ),
+                );
+                i += 8;
+            }
+            while i + 2 <= n {
+                acc0 = f64x2_add(
+                    acc0,
+                    f64x2_mul(v128_load(tp.add(i).cast()), v128_load(rp.add(i).cast())),
+                );
+                i += 2;
+            }
+            let sum = f64x2_add(f64x2_add(acc0, acc1), f64x2_add(acc2, acc3));
+            let mut total = f64x2_extract_lane::<0>(sum) + f64x2_extract_lane::<1>(sum);
+            while i < n {
+                total += tap[i] * row[i];
+                i += 1;
+            }
+            total
+        }
+    }
+
+    /// Pick the best kernel for this engine. Called once per converter build;
+    /// the result is stored as a function pointer so the hot loop stays
+    /// branch-free. Compilation with `target_feature = "simd128"` is itself
+    /// the engine contract (an engine without v128 support fails module
+    /// validation before any code runs), so no runtime check is possible or
+    /// needed.
+    pub(crate) fn select() -> DotFn {
+        dot_simd128
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+pub(crate) use wasm32::select as select_dot;
+
+/// Non-x86_64/non-aarch64 targets — including wasm32 builds without
+/// `-C target-feature=+simd128` — use the portable auto-vectorized fallback.
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
 pub(crate) fn select_dot() -> DotFn {
     dot_scalar
 }
@@ -266,6 +363,17 @@ mod tests {
                 assert!(
                     (neon - kahan).abs() / reference < 1e-12,
                     "n={n}: neon {neon} vs kahan {kahan}"
+                );
+            }
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            {
+                // SAFETY: static target_feature guarantees the engine
+                // implements v128 ops (module validation contract).
+                let simd = unsafe { super::wasm32::dot_simd128(&tap, &row) };
+                let reference = scalar.abs().max(kahan.abs()).max(1.0);
+                assert!(
+                    (simd - kahan).abs() / reference < 1e-12,
+                    "n={n}: simd128 {simd} vs kahan {kahan}"
                 );
             }
             let reference = scalar.abs().max(kahan.abs()).max(1.0);

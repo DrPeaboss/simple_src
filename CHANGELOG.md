@@ -25,6 +25,27 @@
 
 ### Changed
 
+- Sinc hot loop: the FIR delay line is now a mirrored contiguous buffer (the
+  tap window is always one slice in oldest-first order; per-shift cost is a
+  single bounded store, with one window memmove amortized over `taps` shifts),
+  so each output sample runs one dot-kernel call per LUT row instead of two
+  across a ring split — the Generic half-table path drops from four calls to
+  two. The Fast batch loop additionally prefetches the first cache line of
+  the next polyphase row: the row sequence `(pos + numer) % denom` is a
+  modular walk the hardware prefetcher cannot follow, and one primed line is
+  the measured sweet spot (8 lines or a whole-row prefetch run slower than
+  no prefetch at all on Zen 2). Measured at pinned 2.9 GHz on the reference
+  machine: the Fast 44.1 k → 48 k a96 conversion drops from 195 to 163 cycles
+  per output sample (branch misses 0.46 → 0.09 per sample, from the removed
+  indirect dot call); divan medians improve 6.6–27% (Fast) and 4.6–33%
+  (Generic) across the six rate pairs, linear/cubic and init are unchanged.
+  aarch64 (SM8250 prime core, NEON): generic +2.6%, fast unchanged — the
+  prefetch is x86_64-only and the narrower f64 FMA throughput shifts the
+  bottleneck. wasm32 under wasmtime v48.0.2 (the CI runtime): simd128 fast
+  +11.2% / generic +11.8%, scalar builds unchanged. Outputs shift by float
+  reassociation only (same products, new summation order): batch and iterator
+  paths stay bit-identical to each other and all spectral baselines hold on
+  host and device.
 - CLI benchmark parameters for the HydrogenAudio suite, chosen per test
   signal with the reference Octave scorers: impulse converted at
   attenuation 180 (same aligned order 1280, deeper Kaiser stopband:

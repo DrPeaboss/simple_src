@@ -52,15 +52,14 @@ impl GenericFirConverter {
     /// row `b + 1`; `t` may be exactly 1.0 when `x` rounded up to `phases - 1`.
     #[inline]
     fn interpolate(&self, b: usize, t: f64) -> f64 {
-        let (tap_a, tap_b) = self.taps.slices();
-        let la = tap_a.len();
+        let tap = self.taps.window();
+        let rows = &self.rows[..];
         let r0 = b * self.stride;
         let r1 = r0 + self.stride;
-        let rows = &self.rows[..];
         // SAFETY: `self.dot` was selected by `select_dot` for this CPU.
         unsafe {
-            let d0 = dot2(self.dot, rows, r0, la, self.stride, tap_a, tap_b);
-            let d1 = dot2(self.dot, rows, r1, la, self.stride, tap_a, tap_b);
+            let d0 = (self.dot)(tap, &rows[r0..r0 + self.stride]);
+            let d1 = (self.dot)(tap, &rows[r1..r1 + self.stride]);
             d0 + (d1 - d0) * t
         }
     }
@@ -115,26 +114,6 @@ impl GenericFirConverter {
     }
 }
 
-/// Two dot calls over one row split at the delay-line ring boundary.
-///
-/// # Safety
-/// `dot` must be valid for this CPU (see `select_dot`); the row starting at
-/// `base` must have `stride` elements available in `rows`.
-#[inline]
-unsafe fn dot2(
-    dot: DotFn,
-    rows: &[f64],
-    base: usize,
-    la: usize,
-    stride: usize,
-    tap_a: &[f64],
-    tap_b: &[f64],
-) -> f64 {
-    // SAFETY (edition 2024): caller guarantees the `dot` kernel matches the
-    // CPU and that `rows[base..base + stride]` is in bounds.
-    unsafe { dot(tap_a, &rows[base..base + la]) + dot(tap_b, &rows[base + la..base + stride]) }
-}
-
 struct RationalFastConverter {
     phase: PhaseAccum,
     state: FirState,
@@ -162,10 +141,10 @@ impl RationalFastConverter {
     /// One output sample from the current phase; `pos` must be `< phases`.
     #[inline]
     fn interpolate(&self, pos: usize) -> f64 {
-        let (tap_a, tap_b) = self.taps.slices();
+        let tap = self.taps.window();
         let row = &self.lut[pos * self.stride..(pos + 1) * self.stride];
         // SAFETY: `self.dot` was selected by `select_dot` for this CPU.
-        unsafe { (self.dot)(tap_a, &row[..tap_a.len()]) + (self.dot)(tap_b, &row[tap_a.len()..]) }
+        unsafe { (self.dot)(tap, row) }
     }
 
     /// Streaming batch loop for the Running state: the phase arithmetic is
@@ -201,6 +180,8 @@ impl RationalFastConverter {
             unreachable!("fast sinc uses the Rational phase");
         };
         let (mut pos, numer, denom) = (*pos, *numer, *denom);
+        let lut = &self.lut;
+        let stride = self.stride;
         while produced < output.len() {
             while pos >= denom {
                 pos -= denom;
@@ -213,6 +194,10 @@ impl RationalFastConverter {
                     }
                 }
             }
+            // The row sequence `(pos + numer) % denom` is a modular walk, not
+            // a sequential scan, so the hardware prefetcher cannot follow it;
+            // start the next output's row refill while this one is convolved.
+            prefetch_row(lut, (pos + numer) % denom * stride);
             output[produced] = self.interpolate(pos);
             produced += 1;
             pos += numer;
@@ -227,6 +212,43 @@ fn pos_ref(phase: &mut PhaseAccum) -> &mut usize {
     match phase {
         PhaseAccum::Rational { pos, .. } => pos,
         _ => unreachable!("fast sinc uses the Rational phase"),
+    }
+}
+
+/// Cache lines (64 B) of the next polyphase row to prefetch per output
+/// sample. One line is the measured sweet spot on Zen 2: it starts the row's
+/// L2 refill early enough that the hardware streamer covers the rest of the
+/// row, while more lines only add issue overhead and L2 queue pressure
+/// (best-of-5 sweep: 1 line +7% over none, 8 lines ~6% *slower*, whole-row
+/// ~30% slower than none).
+#[cfg(target_arch = "x86_64")]
+const PREFETCH_LINES: usize = 1;
+
+/// Start filling the first [`PREFETCH_LINES`] cache lines of the polyphase
+/// row beginning at element `row_elem` (must be `< lut.len()`).
+#[inline]
+fn prefetch_row(lut: &[f64], row_elem: usize) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::_MM_HINT_T0;
+        // Only touch bytes inside the LUT allocation; the last row gets a
+        // truncated run. `row_elem + line * 8` stays element-aligned.
+        let row_bytes = row_elem * 8;
+        let lut_bytes = lut.len() * 8;
+        let ptr = lut.as_ptr().cast::<u8>();
+        for line in 0..PREFETCH_LINES {
+            let off = row_bytes + line * 64;
+            if off >= lut_bytes {
+                break;
+            }
+            // SAFETY: `off < lut.len() * 8`, so the address is inside the LUT
+            // allocation; PREFETCHT0 itself never faults regardless.
+            unsafe { std::arch::x86_64::_mm_prefetch(ptr.add(off).cast(), _MM_HINT_T0) };
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (lut, row_elem);
     }
 }
 
@@ -260,14 +282,13 @@ impl Convert for GenericFirConverter {
                 let x = phase.pos_float() * quan;
                 let b = (x as usize).min(phases - 2);
                 let t = x - b as f64;
-                let (tap_a, tap_b) = taps.slices();
-                let la = tap_a.len();
+                let tap = taps.window();
                 let r0 = b * stride;
                 let r1 = r0 + stride;
                 // SAFETY: `dot` was selected by `select_dot` for this CPU.
                 unsafe {
-                    let d0 = dot2(dot, rows, r0, la, stride, tap_a, tap_b);
-                    let d1 = dot2(dot, rows, r1, la, stride, tap_a, tap_b);
+                    let d0 = dot(tap, &rows[r0..r0 + stride]);
+                    let d1 = dot(tap, &rows[r1..r1 + stride]);
                     d0 + (d1 - d0) * t
                 }
             },
@@ -290,11 +311,11 @@ impl Convert for RationalFastConverter {
             &mut self.taps,
             iter,
             |phase, taps| {
-                let (tap_a, tap_b) = taps.slices();
+                let tap = taps.window();
                 let pos = phase.pos_usize();
                 let row = &lut[pos * stride..(pos + 1) * stride];
                 // SAFETY: `dot` was selected by `select_dot` for this CPU.
-                unsafe { dot(tap_a, &row[..tap_a.len()]) + dot(tap_b, &row[tap_a.len()..]) }
+                unsafe { dot(tap, row) }
             },
         )
     }

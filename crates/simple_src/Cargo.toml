@@ -22,7 +22,11 @@ num-rational = { version = "0.4", default-features = false }
 rustfft = { version = "6.4", optional = true }
 
 [dev-dependencies]
-divan = "0.1"
+# Benchmark harness. Lean feature set: no plotters/rayon (compile time), no
+# HTML; the machine-readable results live in target/criterion/**/estimates.json
+# and feed the local perf-baseline regression tooling. criterion 0.8 reads no
+# Criterion.toml, so the sampling budget is set in benches/common/mod.rs.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 # Reads/writes the wav fixtures for tests and examples (supports 16/24/32-bit
 # int and 32/64-bit float, including WAVE_FORMAT_EXTENSIBLE).
 wavers = "1.5"

@@ -56,6 +56,22 @@
   spectrogram closer to the reference render) with the aliasing file
   additionally edge-faded. Gapless and bit-depth files keep the verified
   default configuration byte-for-byte.
+- Benchmark harness: divan → criterion 0.8, lean feature set (no plotters,
+  no rayon). divan's last release was 2025-04; criterion 0.8.2 is actively
+  maintained, saves baselines with change detection, and writes
+  machine-readable JSON estimates per bench. Bench names, parameters, and
+  measured workloads are unchanged; the divan per-bench `sample_count`
+  becomes a uniform adaptive-sampling budget (1 s warm-up + 1 s measurement,
+  50 samples), and throughput benches additionally report elem/s through
+  `Throughput::Elements`. Plotting and the 100k bootstrap resampling are
+  disabled: both cost more wall time than the measurement itself on the fast
+  benches (8.9 s → 2.7 s per bench), keeping a full ~220-bench round near
+  10 minutes. Same-commit, same-machine, frozen-clock A/B over 210 matched
+  benches: Δ median +0.0%, p90 +4.7%, with the |Δ|>10% tail confined to the
+  short benches where divan's own run-to-run drift was the larger error (a
+  same-workload divan rerun drifted −26% between eras; criterion reproduces
+  to ±2.5% across independent runs). The lean build still compiles under
+  wasm32-unknown-unknown, so the CI wasm job is unchanged.
 
 ### Fixed
 

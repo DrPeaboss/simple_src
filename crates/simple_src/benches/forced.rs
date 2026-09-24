@@ -1,20 +1,25 @@
 #[cfg(feature = "internal-bench")]
 #[path = "common/mod.rs"]
 mod common;
+// The harness macros and Criterion type must be in scope for the
+// criterion_group!/criterion_main! expansions in both feature states.
 #[cfg(feature = "internal-bench")]
 use common::*;
+#[cfg(not(feature = "internal-bench"))]
+use criterion::Criterion;
+#[cfg(feature = "internal-bench")]
+use criterion::{BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main};
 #[cfg(feature = "internal-bench")]
 use simple_src::{Convert, SrcManager};
-
-fn main() {
-    divan::main();
-}
+#[cfg(feature = "internal-bench")]
+use std::hint::black_box;
 
 /// Forced dot-kernel benches (feature `internal-bench`): measure the portable
 /// scalar fallback against the runtime-selected SIMD kernel on the same
-/// machine. The SIMD-forced entries early-return on CPUs without the target
-/// feature, so they only measure where the kernel actually runs; the scalar
-/// entries run everywhere.
+/// machine. The SIMD entries are only registered when the CPU actually
+/// supports the target feature, so they only measure where the kernel runs;
+/// the scalar entries run everywhere.
 #[cfg(feature = "internal-bench")]
 mod forced {
     use super::*;
@@ -48,7 +53,7 @@ mod forced {
                 break;
             }
             cin += c;
-            acc += divan::black_box(sink[p - 1]);
+            acc += black_box(sink[p - 1]);
             produced += p;
         }
         acc
@@ -62,77 +67,51 @@ mod forced {
             .process(iter)
             .take(conv.sample_num_10ms())
         {
-            acc += divan::black_box(s);
+            acc += black_box(s);
         }
         acc
     }
 
-    #[divan::bench(
-        name = "4. forced scalar fast batch",
-        args = [Conv::C44k48k, Conv::C48k44k],
-        sample_count = 500,
-    )]
-    fn forced_scalar_fast_batch(bencher: divan::Bencher, conv: &Conv) {
-        let manager = sinc_manager(conv, 96.0, true);
-        bencher.bench_local(move || batch_forced(&manager, conv, true));
-    }
-
-    #[divan::bench(
-        name = "4. forced simd fast batch",
-        args = [Conv::C44k48k, Conv::C48k44k],
-        sample_count = 500,
-    )]
-    fn forced_simd_fast_batch(bencher: divan::Bencher, conv: &Conv) {
-        if !simd_available() {
-            return; // SIMD not present on this CPU: nothing to measure
+    /// One forced bench group: scalar or SIMD kernel, batch or iterator API.
+    fn group(c: &mut Criterion, name: &str, generic: bool, scalar: bool, batch: bool) {
+        let mut g = c.benchmark_group(name);
+        for conv in CONVERT_CONVS {
+            g.throughput(Throughput::Elements(conv.sample_num_10ms() as u64));
+            g.bench_with_input(BenchmarkId::from_parameter(&conv), &conv, |b, conv| {
+                let manager = sinc_manager(conv, 96.0, !generic);
+                if batch {
+                    b.iter(|| batch_forced(&manager, conv, scalar));
+                } else {
+                    b.iter(|| iter_forced(&manager, conv, scalar));
+                }
+            });
         }
-        let manager = sinc_manager(conv, 96.0, true);
-        bencher.bench_local(move || batch_forced(&manager, conv, false));
+        g.finish();
     }
 
-    #[divan::bench(
-        name = "4. forced scalar fast iter",
-        args = [Conv::C44k48k, Conv::C48k44k],
-        sample_count = 500,
-    )]
-    fn forced_scalar_fast_iter(bencher: divan::Bencher, conv: &Conv) {
-        let manager = sinc_manager(conv, 96.0, true);
-        bencher.bench_local(move || iter_forced(&manager, conv, true));
-    }
-
-    #[divan::bench(
-        name = "4. forced simd fast iter",
-        args = [Conv::C44k48k, Conv::C48k44k],
-        sample_count = 500,
-    )]
-    fn forced_simd_fast_iter(bencher: divan::Bencher, conv: &Conv) {
-        if !simd_available() {
-            return;
+    pub fn register(c: &mut Criterion) {
+        group(c, "4. forced scalar fast batch", false, true, true);
+        group(c, "4. forced scalar fast iter", false, true, false);
+        group(c, "4. forced scalar generic batch", true, true, true);
+        if simd_available() {
+            group(c, "4. forced simd fast batch", false, false, true);
+            group(c, "4. forced simd fast iter", false, false, false);
+            group(c, "4. forced simd generic batch", true, false, true);
         }
-        let manager = sinc_manager(conv, 96.0, true);
-        bencher.bench_local(move || iter_forced(&manager, conv, false));
-    }
-
-    #[divan::bench(
-        name = "4. forced scalar generic batch",
-        args = [Conv::C44k48k, Conv::C48k44k],
-        sample_count = 200,
-    )]
-    fn forced_scalar_generic_batch(bencher: divan::Bencher, conv: &Conv) {
-        let manager = sinc_manager(conv, 96.0, false);
-        bencher.bench_local(move || batch_forced(&manager, conv, true));
-    }
-
-    #[divan::bench(
-        name = "4. forced simd generic batch",
-        args = [Conv::C44k48k, Conv::C48k44k],
-        sample_count = 200,
-    )]
-    fn forced_simd_generic_batch(bencher: divan::Bencher, conv: &Conv) {
-        if !simd_available() {
-            return;
-        }
-        let manager = sinc_manager(conv, 96.0, false);
-        bencher.bench_local(move || batch_forced(&manager, conv, false));
     }
 }
+
+#[cfg(feature = "internal-bench")]
+criterion_group! {
+    name = benches;
+    config = criterion_config();
+    targets = forced::register
+}
+
+#[cfg(not(feature = "internal-bench"))]
+fn noop(_c: &mut Criterion) {}
+
+#[cfg(not(feature = "internal-bench"))]
+criterion_group!(benches, noop);
+
+criterion_main!(benches);

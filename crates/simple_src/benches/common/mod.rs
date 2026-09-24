@@ -5,7 +5,27 @@
 //! place instead of being duplicated across bench files.
 #![allow(dead_code)]
 
+use std::time::Duration;
+
+use criterion::{Criterion, PlottingBackend};
 use simple_src::{Convert, Quality, SrcManager, flush_planar, process_planar};
+
+/// Shared criterion protocol: a full ~220-bench round must stay affordable
+/// (~10 min) because the local perf-baseline gate runs multi-round min-of
+/// medians over it. Note criterion 0.8 no longer reads Criterion.toml
+/// implicitly, so this is the single place the budget is defined. Plotting
+/// is off: the SVG rendering costs more wall time than the measurement
+/// itself on high-iteration benches. The bootstrap resample count is cut
+/// 10x for the same reason — the perf-baseline tooling consumes the median
+/// point estimate, which does not depend on it.
+pub fn criterion_config() -> Criterion {
+    Criterion::default()
+        .warm_up_time(Duration::from_secs(1))
+        .measurement_time(Duration::from_secs(1))
+        .sample_size(50)
+        .nresamples(10_000)
+        .plotting_backend(PlottingBackend::None)
+}
 
 pub enum Conv {
     C44k48k,
@@ -29,6 +49,22 @@ impl std::fmt::Display for Conv {
         f.write_str(label)
     }
 }
+
+/// All conversion directions in bench registration order.
+pub const ALL_CONVS: [Conv; 6] = [
+    Conv::C44k48k,
+    Conv::C44k96k,
+    Conv::C48k44k,
+    Conv::C48k96k,
+    Conv::C96k44k,
+    Conv::C96k48k,
+];
+
+/// The 44.1k <-> 48k pair used by the convert/planar and forced benches.
+pub const CONVERT_CONVS: [Conv; 2] = [Conv::C44k48k, Conv::C48k44k];
+
+/// The three ratios of the fixed-quantum (64/256) batch benches.
+pub const QUANTUM_CONVS: [Conv; 3] = [Conv::C44k48k, Conv::C48k44k, Conv::C96k44k];
 
 pub const R44K48K: f64 = 48000.0 / 44100.0;
 pub const R44K96K: f64 = 96000.0 / 44100.0;
@@ -117,7 +153,7 @@ pub fn batch_throughput(
             break;
         }
         cin += c;
-        acc += divan::black_box(sink[p - 1]);
+        acc += std::hint::black_box(sink[p - 1]);
         produced += p;
     }
     if drain {
@@ -126,7 +162,7 @@ pub fn batch_throughput(
             if n == 0 {
                 break;
             }
-            acc += divan::black_box(sink[n - 1]);
+            acc += std::hint::black_box(sink[n - 1]);
         }
     }
     acc
@@ -155,7 +191,7 @@ pub fn planar_throughput(m: &SrcManager, left: &[f64], right: &[f64], total_out:
             break;
         }
         cin += c;
-        acc += divan::black_box(sink_l[p - 1]) + divan::black_box(sink_r[p - 1]);
+        acc += std::hint::black_box(sink_l[p - 1]) + std::hint::black_box(sink_r[p - 1]);
         produced += p;
     }
     loop {
@@ -167,7 +203,7 @@ pub fn planar_throughput(m: &SrcManager, left: &[f64], right: &[f64], total_out:
         if n == 0 {
             break;
         }
-        acc += divan::black_box(sink_l[n - 1]) + divan::black_box(sink_r[n - 1]);
+        acc += std::hint::black_box(sink_l[n - 1]) + std::hint::black_box(sink_r[n - 1]);
     }
     acc
 }
@@ -232,7 +268,7 @@ pub fn sinc_iter_throughput(m: &SrcManager, conv: &Conv) -> f64 {
     let mut acc = 0.0f64;
     let iter = (0..).map(|x| x as f64);
     for s in m.converter().process(iter).take(conv.sample_num_10ms()) {
-        acc += divan::black_box(s);
+        acc += std::hint::black_box(s);
     }
     acc
 }
@@ -259,6 +295,17 @@ impl std::fmt::Display for Shape {
         })
     }
 }
+
+/// All ratio shapes in bench registration order.
+pub const ALL_SHAPES: [Shape; 4] = [
+    Shape::FloatPi,
+    Shape::Generic20000Of19999,
+    Shape::Up16,
+    Shape::Down16,
+];
+
+/// The power-of-two bounds supported by the Fast sinc path.
+pub const UP16_SHAPES: [Shape; 2] = [Shape::Up16, Shape::Down16];
 
 impl Shape {
     pub fn manager(&self) -> SrcManager {
